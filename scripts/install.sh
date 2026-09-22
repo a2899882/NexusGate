@@ -99,8 +99,16 @@ caddy validate --config /etc/caddy/Caddyfile
 
 systemctl daemon-reload
 systemctl enable --now nexusgate.service
-for _ in {1..30}; do curl -fsS http://127.0.0.1:8787/healthz >/dev/null && break; sleep 1; done
-curl -fsS http://127.0.0.1:8787/healthz >/dev/null || die "控制面启动失败，请运行 journalctl -u nexusgate -n 100"
+healthy=false
+for _ in {1..30}; do
+  if curl -fsS http://127.0.0.1:8787/healthz >/dev/null 2>&1; then healthy=true; break; fi
+  sleep 1
+done
+if [[ "$healthy" != true ]]; then
+  systemctl status nexusgate --no-pager || true
+  journalctl -u nexusgate -n 100 --no-pager || true
+  die "控制面启动失败，诊断信息已输出"
+fi
 sed -i '/^NG_ADMIN_PASSWORD=/d' /etc/nexusgate.env
 systemctl enable --now caddy
 systemctl reload caddy
