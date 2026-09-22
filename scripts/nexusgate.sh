@@ -61,6 +61,9 @@ update_panel() {
   cp -a "$stage/source/." /opt/nexusgate/
   install -m 0644 /opt/nexusgate/systemd/nexusgate.service /etc/systemd/system/nexusgate.service
   install -m 0755 /opt/nexusgate/scripts/nexusgate.sh /usr/local/sbin/nexusgate
+  chown -R nexusgate:nexusgate /var/lib/nexusgate
+  chmod 0700 /var/lib/nexusgate
+  [[ ! -f /var/lib/nexusgate/nexusgate.json ]] || chmod 0600 /var/lib/nexusgate/nexusgate.json
   systemctl daemon-reload && systemctl start nexusgate
   local healthy=false
   for _ in {1..30}; do
@@ -103,7 +106,11 @@ change_password() {
   local result=$?
   unset first second
   set -e
-  if [[ $result -eq 0 ]]; then sed -i '/^NG_ADMIN_PASSWORD=/d' /etc/nexusgate.env; fi
+  if [[ $result -eq 0 ]]; then
+    chown nexusgate:nexusgate /var/lib/nexusgate/nexusgate.json
+    chmod 0600 /var/lib/nexusgate/nexusgate.json
+    sed -i '/^NG_ADMIN_PASSWORD=/d' /etc/nexusgate.env
+  fi
   systemctl start nexusgate
   [[ $result -eq 0 ]] || die "密码更新失败"
   info "密码已更新，现有登录会话将在服务重启后失效"
