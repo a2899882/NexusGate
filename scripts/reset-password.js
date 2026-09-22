@@ -10,7 +10,7 @@ if (password.length < 10) {
   console.error('密码至少需要 10 个字符');
   process.exit(1);
 }
-const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+const data = JSON.parse(fs.readFileSync(file, 'utf8'));\nconst originalStat = fs.statSync(file);
 const user = data.users.find((item) => item.username === username);
 if (!user) {
   console.error(`用户不存在：${username}`);
