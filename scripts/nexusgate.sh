@@ -62,6 +62,16 @@ update_panel() {
   install -m 0644 /opt/nexusgate/systemd/nexusgate.service /etc/systemd/system/nexusgate.service
   install -m 0755 /opt/nexusgate/scripts/nexusgate.sh /usr/local/sbin/nexusgate
   systemctl daemon-reload && systemctl start nexusgate
+  local healthy=false
+  for _ in {1..30}; do
+    if curl -fsS http://127.0.0.1:8787/healthz >/dev/null 2>&1; then healthy=true; break; fi
+    sleep 1
+  done
+  if [[ "$healthy" != true ]]; then
+    systemctl status nexusgate --no-pager || true
+    journalctl -u nexusgate -n 100 --no-pager || true
+    die "更新后控制面启动失败；可使用上方备份恢复"
+  fi
   info "更新完成；更新前备份：$current_backup"
 }
 
@@ -93,6 +103,7 @@ change_password() {
   local result=$?
   unset first second
   set -e
+  if [[ $result -eq 0 ]]; then sed -i '/^NG_ADMIN_PASSWORD=/d' /etc/nexusgate.env; fi
   systemctl start nexusgate
   [[ $result -eq 0 ]] || die "密码更新失败"
   info "密码已更新，现有登录会话将在服务重启后失效"
