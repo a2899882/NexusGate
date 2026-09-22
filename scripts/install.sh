@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO="${NG_REPO:-a2899882/nexusgate}"
+REPO="${NG_REPO:-a2899882/NexusGate}"
 BRANCH="${NG_BRANCH:-main}"
 DOMAIN=""
 EMAIL=""

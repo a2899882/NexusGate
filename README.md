@@ -61,13 +61,13 @@ flowchart LR
 准备一台 Debian 12 / Ubuntu VPS，并把域名 A/AAAA 记录解析到它：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/a2899882/nexusgate/main/scripts/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/install.sh)
 ```
 
 安装器会提示域名和证书邮箱，自动安装 Node.js、Caddy、systemd 服务，并输出首次登录密码。也可非交互安装：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/a2899882/nexusgate/main/scripts/install.sh) \
+bash <(curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/install.sh) \
   --domain gate.example.com --email admin@example.com
 ```
 

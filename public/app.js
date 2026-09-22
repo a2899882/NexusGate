@@ -208,7 +208,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'add-chain') chainForm();
     if (action === 'enroll-server') {
       const result = await api(`/api/servers/${itemId}/enrollment-token`, { method:'POST', body:'{}' });
-      const command = `curl -fsSL https://raw.githubusercontent.com/a2899882/nexusgate/main/scripts/agent-install.sh | bash -s -- --server ${location.origin} --token ${result.token}`;
+      const command = `curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/agent-install.sh | bash -s -- --server ${location.origin} --token ${result.token}`;
       modal('ONE-TIME ENROLLMENT', 'Agent 注册命令', `<div class="stack"><div class="notice">令牌 30 分钟内有效且只能使用一次。在目标 VPS 以 root 执行：</div><div class="codebox">${esc(command)}</div><button class="primary" data-action="copy-uri" data-value="${esc(command)}">复制命令</button></div>`);
     }
     if (action === 'copy-uri') { await navigator.clipboard.writeText(button.dataset.value); toast('已复制'); }
