@@ -1,0 +1,25 @@
+[Unit]
+Description=NexusGate control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexusgate
+Group=nexusgate
+WorkingDirectory=/opt/nexusgate
+EnvironmentFile=/etc/nexusgate.env
+ExecStart=/usr/bin/node /opt/nexusgate/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nexusgate
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

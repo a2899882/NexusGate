@@ -1,0 +1,59 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const { spawn } = require('node:child_process');
+
+async function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); });
+  });
+}
+
+async function waitFor(url) {
+  for (let i = 0; i < 60; i += 1) {
+    try { const response = await fetch(url); if (response.ok) return; } catch { /* retry */ }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('test server did not start');
+}
+
+test('admin can create resources and queue a mixed-protocol chain', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'nexusgate-api-'));
+  const port = await freePort();
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: path.resolve(__dirname, '..'),
+    env: { ...process.env, NG_HOST: '127.0.0.1', NG_PORT: String(port), NG_DATA_FILE: path.join(dir, 'data.json'), NG_ADMIN_PASSWORD: 'test-password', NG_COOKIE_SECURE: 'false' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(async () => { child.kill('SIGTERM'); await fs.promises.rm(dir, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${port}`;
+  await waitFor(`${base}/healthz`);
+
+  const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'test-password' }) });
+  assert.equal(login.status, 200);
+  const session = await login.json();
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const request = async (pathname, method = 'GET', body) => {
+    const response = await fetch(`${base}${pathname}`, { method, headers: { cookie, 'x-csrf-token': session.csrf, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    const json = await response.json();
+    assert.ok(response.ok, JSON.stringify(json));
+    return json;
+  };
+
+  const relay = (await request('/api/servers', 'POST', { name: '中转 01', role: 'relay', region: 'SG', publicAddress: 'relay.example.com' })).server;
+  const exit = (await request('/api/servers', 'POST', { name: '落地 01', role: 'exit', region: 'JP', publicAddress: 'exit.example.com' })).server;
+  const customer = (await request('/api/customers', 'POST', { name: '客户 A', ipLimit: 2, trafficLimitBytes: 1073741824 })).customer;
+  const chain = (await request('/api/chains', 'POST', { name: 'SG → JP', relayServerIds: [relay.id], exitServerId: exit.id, customerIds: [customer.id], relayProtocol: 'vless-reality-vision', exitProtocol: 'shadowsocks-2022-aes128' })).chain;
+  const deployed = await request(`/api/chains/${chain.id}/deploy`, 'POST', {});
+  assert.equal(deployed.deployments.length, 2);
+  const jobs = await request('/api/jobs');
+  assert.equal(jobs.jobs.length, 2);
+  assert.ok(jobs.jobs.every((job) => job.status === 'queued'));
+});

@@ -1,0 +1,15 @@
+[Unit]
+Description=NexusGate managed Xray core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/xray run -config /etc/nexusgate/xray/config.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

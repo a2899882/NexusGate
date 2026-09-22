@@ -1,0 +1,19 @@
+[Unit]
+Description=NexusGate node agent
+After=network-online.target nexusgate-xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/nexusgate/agent.env
+ExecStart=/usr/bin/node /opt/nexusgate-agent/agent.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/nexusgate /var/log/nexusgate
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0b1220">
+  <title>NexusGate · Control Center</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="login" class="login-shell hidden">
+    <section class="login-card">
+      <div class="brand-mark">N</div>
+      <p class="eyebrow">CONTROL CENTER</p>
+      <h1>欢迎回来</h1>
+      <p class="muted">登录统一资源管理中心</p>
+      <form id="login-form" class="stack">
+        <label>账号<input name="username" autocomplete="username" value="admin" required></label>
+        <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="primary full" type="submit">安全登录</button>
+      </form>
+      <p id="login-error" class="form-error"></p>
+    </section>
+  </div>
+
+  <div id="app" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark small">N</span><span><b>NexusGate</b><small>枢门控制台</small></span></div>
+      <nav id="nav">
+        <button data-page="overview" class="active"><span>◫</span>总览</button>
+        <button data-page="servers"><span>⌁</span>服务器</button>
+        <button data-page="customers"><span>◎</span>客户</button>
+        <button data-page="chains"><span>⇄</span>链路编排</button>
+        <button data-page="deployments"><span>◇</span>部署与订阅</button>
+        <button data-page="operations"><span>⚙</span>运维中心</button>
+      </nav>
+      <div class="sidebar-foot"><span class="pulse"></span><span id="connection-label">控制面正常</span><button id="logout" title="退出">↗</button></div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p id="breadcrumb" class="eyebrow">NEXUSGATE / 总览</p><h1 id="page-title">运行总览</h1></div>
+        <div class="top-actions"><button id="refresh" class="ghost">刷新</button><span id="user-chip" class="chip"></span></div>
+      </header>
+      <div id="content" class="content"></div>
+    </main>
+  </div>
+
+  <dialog id="modal">
+    <section class="dialog-shell">
+      <header><div><p id="modal-kicker" class="eyebrow"></p><h2 id="modal-title"></h2></div><button type="button" data-close class="icon-btn" aria-label="关闭">×</button></header>
+      <div id="modal-body"></div>
+    </section>
+  </dialog>
+  <div id="toasts" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
