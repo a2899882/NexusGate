@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -15,7 +15,7 @@ const CONFIG_FILE = path.join(ROOT, 'config.json');
 const KEY_FILE = process.env.NG_KEY_FILE || '/etc/nexusgate/keys.json';
 const ACCESS_LOG = process.env.NG_XRAY_ACCESS_LOG || '/var/log/nexusgate/xray-access.log';
 const CURSOR_FILE = process.env.NG_ACCESS_CURSOR || '/etc/nexusgate/access-cursor.json';
-const POLL_MS = Math.max(2, Number(process.env.NG_POLL_SECONDS || 5)) * 1000;
+const POLL_MS = Math.max(3, Number(process.env.NG_POLL_SECONDS || 8)) * 1000;
 
 if (!CONTROLLER || !AGENT_KEY) {
   console.error('NG_CONTROLLER and NG_AGENT_KEY are required');
@@ -61,8 +61,8 @@ function realityKey(keyId) {
   const result = spawnSync(XRAY_BIN, ['x25519'], { encoding: 'utf8', timeout: 15000 });
   if (result.status !== 0) throw new Error(`xray x25519 failed: ${result.stderr || result.stdout}`);
   const output = `${result.stdout}\n${result.stderr}`;
-  const privateKey = (output.match(/Private key:\s*([^\s]+)/i) || [])[1];
-  const publicKey = (output.match(/Public key:\s*([^\s]+)/i) || output.match(/Password:\s*([^\s]+)/i) || [])[1];
+  const privateKey = (output.match(/Private\s*Key:\s*([^\s]+)/i) || [])[1];
+  const publicKey = (output.match(/Public\s*Key:\s*([^\s]+)/i) || output.match(/Password:\s*([^\s]+)/i) || [])[1];
   if (!privateKey || !publicKey) throw new Error(`Unable to parse x25519 output: ${output.slice(0, 400)}`);
   keys[keyId] = { privateKey, publicKey, createdAt: new Date().toISOString() };
   saveKeys(keys);
@@ -109,6 +109,11 @@ function run(command, args, timeout = 30000) {
   return result.stdout;
 }
 
+function restartXray() {
+  if (fs.existsSync('/run/systemd/system')) return run('systemctl', ['restart', 'nexusgate-xray.service']);
+  return run('rc-service', ['nexusgate-xray', 'restart']);
+}
+
 function activateConfig() {
   const candidate = `${CONFIG_FILE}.candidate`;
   const previous = `${CONFIG_FILE}.previous`;
@@ -117,11 +122,11 @@ function activateConfig() {
   if (fs.existsSync(CONFIG_FILE)) fs.copyFileSync(CONFIG_FILE, previous);
   fs.renameSync(candidate, CONFIG_FILE);
   try {
-    run('systemctl', ['restart', 'nexusgate-xray.service']);
+    restartXray();
   } catch (error) {
     if (fs.existsSync(previous)) {
       fs.copyFileSync(previous, CONFIG_FILE);
-      try { run('systemctl', ['restart', 'nexusgate-xray.service']); } catch { /* preserve original error */ }
+      try { restartXray(); } catch { /* preserve original error */ }
     }
     throw error;
   }
@@ -251,6 +256,7 @@ async function pollLoop() {
 async function main() {
   ensureDirectories();
   log(`NexusGate Agent v${VERSION} starting`);
+  activateConfig();
   await heartbeat();
   setInterval(() => heartbeat().catch((error) => log('Heartbeat failed', error.message)), 30000).unref();
   usageLoop();

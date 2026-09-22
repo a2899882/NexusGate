@@ -7,7 +7,7 @@ const net = require('node:net');
 const { Store } = require('./lib/store');
 const { hashSecret, verifySecret, randomToken, SessionManager } = require('./lib/auth');
 const { sendJson, sendError, readJson, route, serveStatic } = require('./lib/http');
-const { PROFILE_CATALOG } = require('./lib/protocols');
+const { PROFILE_CATALOG, REALITY_PRESETS, validateEntryProtocol, validateProtocolPair, isRealityProtocol } = require('./lib/protocols');
 const { Orchestrator, audit, id, nowIso } = require('./lib/orchestrator');
 
 const APP_ROOT = __dirname;
@@ -16,6 +16,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
+const VERSION = '0.2.0';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -38,6 +39,69 @@ function requiredText(value, label, max = 120) {
 
 function asIds(value) {
   return Array.isArray(value) ? [...new Set(value.map(String).filter(Boolean))] : [];
+}
+
+function tokenFingerprint(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
+
+function optionalIso(value, label = '日期') {
+  if (value == null || value === '') return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) { const error = new Error(`${label}格式无效`); error.statusCode = 400; throw error; }
+  return date.toISOString();
+}
+
+function nonNegativeNumber(value, label, integer = false) {
+  const number = Number(value == null || value === '' ? 0 : value);
+  if (!Number.isFinite(number) || number < 0 || (integer && !Number.isInteger(number))) {
+    const error = new Error(`${label}必须是非负${integer ? '整数' : '数字'}`); error.statusCode = 400; throw error;
+  }
+  return number;
+}
+
+function normalizeServer(body, current = {}) {
+  const next = {
+    ...current,
+    name: 'name' in body ? requiredText(body.name, '服务器名称') : current.name,
+    role: 'role' in body && ['relay', 'exit', 'hybrid'].includes(body.role) ? body.role : (current.role || 'hybrid'),
+    region: 'region' in body ? cleanText(body.region, 80) : (current.region || ''),
+    publicAddress: 'publicAddress' in body ? requiredText(body.publicAddress, '公网地址', 255) : current.publicAddress,
+    publicAddressV6: 'publicAddressV6' in body ? cleanText(body.publicAddressV6, 255) : (current.publicAddressV6 || ''),
+    portRangeStart: 'portRangeStart' in body ? Number(body.portRangeStart) : Number(current.portRangeStart || 20000),
+    portRangeEnd: 'portRangeEnd' in body ? Number(body.portRangeEnd) : Number(current.portRangeEnd || 50000),
+    labels: 'labels' in body ? asIds(body.labels).slice(0, 20) : (current.labels || [])
+  };
+  if (!Number.isInteger(next.portRangeStart) || !Number.isInteger(next.portRangeEnd) || next.portRangeStart < 1024 || next.portRangeEnd > 65535 || next.portRangeStart > next.portRangeEnd) {
+    const error = new Error('端口范围必须是 1024–65535 之间的整数'); error.statusCode = 400; throw error;
+  }
+  return next;
+}
+
+function normalizeChain(body, current = {}) {
+  const topology = 'topology' in body ? (body.topology === 'direct' ? 'direct' : 'forward') : (current.topology || 'forward');
+  const next = {
+    ...current,
+    name: 'name' in body ? requiredText(body.name, '线路名称') : current.name,
+    topology,
+    relayServerIds: 'relayServerIds' in body ? asIds(body.relayServerIds) : (current.relayServerIds || []),
+    exitServerId: topology === 'direct' ? null : ('exitServerId' in body ? requiredText(body.exitServerId, '出口服务器 ID') : current.exitServerId),
+    customerIds: 'customerIds' in body ? asIds(body.customerIds) : (current.customerIds || []),
+    relayProtocol: 'relayProtocol' in body ? cleanText(body.relayProtocol, 64) : current.relayProtocol,
+    exitProtocol: topology === 'direct' ? null : ('exitProtocol' in body ? cleanText(body.exitProtocol, 64) : current.exitProtocol),
+    relayPortMode: 'relayPortMode' in body ? (body.relayPortMode === 'fixed' ? 'fixed' : 'random') : (current.relayPortMode || 'random'),
+    relayPort: 'relayPort' in body ? (body.relayPort ? Number(body.relayPort) : null) : (current.relayPort || null),
+    exitPortMode: topology === 'direct' ? null : ('exitPortMode' in body ? (body.exitPortMode === 'fixed' ? 'fixed' : 'random') : (current.exitPortMode || 'random')),
+    exitPort: topology === 'direct' ? null : ('exitPort' in body ? (body.exitPort ? Number(body.exitPort) : null) : (current.exitPort || null)),
+    networkMode: 'networkMode' in body && ['ipv4', 'ipv6', 'dual'].includes(body.networkMode) ? body.networkMode : (current.networkMode || 'ipv4'),
+    realityServerName: 'realityServerName' in body ? cleanText(body.realityServerName, 255) : (current.realityServerName || 'www.tesla.com'),
+    realityDestPort: 'realityDestPort' in body ? Number(body.realityDestPort || 443) : Number(current.realityDestPort || 443)
+  };
+  if (!next.relayServerIds.length || !next.customerIds.length) { const error = new Error('请选择入口服务器和客户'); error.statusCode = 400; throw error; }
+  if (next.relayPortMode === 'fixed' && (!Number.isInteger(next.relayPort) || next.relayPort < 1024 || next.relayPort > 65535)) { const error = new Error('固定入口端口无效'); error.statusCode = 400; throw error; }
+  if (topology === 'forward' && next.exitPortMode === 'fixed' && (!Number.isInteger(next.exitPort) || next.exitPort < 1024 || next.exitPort > 65535)) { const error = new Error('固定出口端口无效'); error.statusCode = 400; throw error; }
+  if (topology === 'direct') validateEntryProtocol(next.relayProtocol); else validateProtocolPair(next.relayProtocol, next.exitProtocol);
+  if (isRealityProtocol(next.relayProtocol) && !next.realityServerName) { const error = new Error('Reality SNI 不能为空'); error.statusCode = 400; throw error; }
+  if (isRealityProtocol(next.relayProtocol) && (!Number.isInteger(next.realityDestPort) || next.realityDestPort < 1 || next.realityDestPort > 65535)) { const error = new Error('Reality 目标端口无效'); error.statusCode = 400; throw error; }
+  return next;
 }
 
 function publicDeployment(item) {
@@ -85,7 +149,10 @@ function findAgentByBearer(req) {
   const header = String(req.headers.authorization || '');
   if (!header.startsWith('Bearer ')) return null;
   const token = header.slice(7);
-  return store.data.agents.find((agent) => agent.status === 'active' && verifySecret(token, agent.keyHash)) || null;
+  const fingerprint = tokenFingerprint(token);
+  const fastMatch = store.data.agents.find((agent) => agent.status === 'active' && agent.keyFingerprint === fingerprint);
+  if (fastMatch && verifySecret(token, fastMatch.keyHash)) return fastMatch;
+  return store.data.agents.find((agent) => agent.status === 'active' && !agent.keyFingerprint && verifySecret(token, agent.keyHash)) || null;
 }
 
 async function handleAuth(req, res, pathname) {
@@ -154,7 +221,7 @@ async function handleAgent(req, res, pathname) {
       if (!server) throw Object.assign(new Error('目标服务器不存在'), { statusCode: 404 });
       for (const old of data.agents.filter((item) => item.serverId === server.id)) old.status = 'revoked';
       const agent = {
-        id: id('agt'), serverId: server.id, keyHash: hashSecret(agentKey), status: 'active',
+        id: id('agt'), serverId: server.id, keyHash: hashSecret(agentKey), keyFingerprint: tokenFingerprint(agentKey), status: 'active',
         hostname: cleanText(body.hostname, 128), version: cleanText(body.version, 32),
         createdAt: nowIso(), lastSeenAt: nowIso()
       };
@@ -162,10 +229,14 @@ async function handleAgent(req, res, pathname) {
       server.status = 'online';
       server.lastSeenAt = nowIso();
       server.system = body.system || {};
+      server.updatedAt = nowIso();
       audit(data, `agent:${agent.id}`, 'enroll_agent', server.id);
       return { agentId: agent.id, serverId: server.id, serverName: server.name };
     });
-    sendJson(res, 201, { ...result, agentKey });
+    let reconciled = 0;
+    try { reconciled = await orchestrator.reconcileServer(result.serverId, `agent:${result.agentId}`); }
+    catch (error) { console.error('Agent reconciliation failed:', error); }
+    sendJson(res, 201, { ...result, agentKey, reconciled });
     return true;
   }
 
@@ -204,6 +275,7 @@ async function handleAgent(req, res, pathname) {
       job.attempts += 1;
       job.startedAt = nowIso();
       job.updatedAt = nowIso();
+      job.leaseUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString();
       picked = structuredClone(job);
     });
     sendJson(res, 200, { job: picked });
@@ -289,13 +361,33 @@ async function handleAdminApi(req, res, pathname) {
         chains: data.chains.length, activeDeployments: data.deployments.filter((item) => item.status === 'active').length,
         queuedJobs: data.jobs.filter((item) => ['queued', 'running'].includes(item.status)).length
       },
+      version: VERSION,
       activity: data.activity.slice(0, 12),
       degraded: data.deployments.filter((item) => item.status === 'failed').map(publicDeployment).slice(0, 10)
     });
     return true;
   }
   if (req.method === 'GET' && pathname === '/api/protocols') {
-    sendJson(res, 200, { profiles: PROFILE_CATALOG });
+    sendJson(res, 200, { profiles: PROFILE_CATALOG, realityPresets: REALITY_PRESETS });
+    return true;
+  }
+  if (req.method === 'PATCH' && pathname === '/api/account') {
+    const body = await readJson(req);
+    if (!verifySecret(body.currentPassword, auth.user.passwordHash)) throw Object.assign(new Error('当前密码不正确'), { statusCode: 400 });
+    const username = 'username' in body ? requiredText(body.username, '登录账号', 64) : auth.user.username;
+    const newPassword = body.newPassword == null ? '' : String(body.newPassword).slice(0, 256);
+    if (newPassword && newPassword.length < 10) throw Object.assign(new Error('新密码至少需要 10 位'), { statusCode: 400 });
+    await store.transaction((data) => {
+      const item = data.users.find((entry) => entry.id === auth.user.id);
+      if (!item) throw Object.assign(new Error('账号不存在'), { statusCode: 404 });
+      if (data.users.some((entry) => entry.id !== item.id && entry.username === username)) throw Object.assign(new Error('该登录账号已被使用'), { statusCode: 409 });
+      item.username = username;
+      if (newPassword) item.passwordHash = hashSecret(newPassword);
+      item.updatedAt = nowIso();
+      audit(data, actor, 'update_account', item.id, { username });
+    });
+    sessions = new SessionManager(store.data.settings.sessionHours || 12);
+    sendJson(res, 200, { ok: true, reauthenticate: true }, { 'set-cookie': 'ng_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
     return true;
   }
 
@@ -307,15 +399,8 @@ async function handleAdminApi(req, res, pathname) {
     const body = await readJson(req);
     const server = await store.transaction((data) => {
       const next = {
-        id: id('srv'), name: requiredText(body.name, '服务器名称'),
-        role: ['relay', 'exit', 'hybrid'].includes(body.role) ? body.role : 'hybrid',
-        region: cleanText(body.region, 80), publicAddress: requiredText(body.publicAddress, '公网地址', 255),
-        portRangeStart: Number(body.portRangeStart || 20000), portRangeEnd: Number(body.portRangeEnd || 50000),
-        labels: asIds(body.labels).slice(0, 20), status: 'pending', createdAt: nowIso(), updatedAt: nowIso()
+        ...normalizeServer(body), id: id('srv'), status: 'pending', createdAt: nowIso(), updatedAt: nowIso()
       };
-      if (next.portRangeStart < 1024 || next.portRangeEnd > 65535 || next.portRangeStart > next.portRangeEnd) {
-        throw Object.assign(new Error('端口范围必须在 1024–65535 之间'), { statusCode: 400 });
-      }
       data.servers.push(next);
       audit(data, actor, 'create_server', next.id, { name: next.name });
       return structuredClone(next);
@@ -324,6 +409,18 @@ async function handleAdminApi(req, res, pathname) {
     return true;
   }
   const serverItem = route('/api/servers/:id', pathname);
+  if (serverItem && req.method === 'PATCH') {
+    const body = await readJson(req);
+    const server = await store.transaction((data) => {
+      const item = data.servers.find((entry) => entry.id === serverItem.id);
+      if (!item) throw Object.assign(new Error('服务器不存在'), { statusCode: 404 });
+      Object.assign(item, normalizeServer(body, item), { updatedAt: nowIso() });
+      audit(data, actor, 'update_server', item.id, { name: item.name });
+      return structuredClone(item);
+    });
+    sendJson(res, 200, { server });
+    return true;
+  }
   if (serverItem && req.method === 'DELETE') {
     await store.transaction((data) => {
       const index = data.servers.findIndex((item) => item.id === serverItem.id);
@@ -364,9 +461,9 @@ async function handleAdminApi(req, res, pathname) {
     const customer = await store.transaction((data) => {
       const next = {
         id: id('cus'), name: requiredText(body.name, '客户名称'), group: cleanText(body.group, 80),
-        status: 'active', trafficLimitBytes: Math.max(0, Number(body.trafficLimitBytes || 0)), usedBytes: 0,
-        expiresAt: body.expiresAt ? new Date(body.expiresAt).toISOString() : null,
-        ipLimit: Math.max(0, Number(body.ipLimit || 0)), deviceLimit: Math.max(0, Number(body.deviceLimit || 0)),
+        status: 'active', trafficLimitBytes: nonNegativeNumber(body.trafficLimitBytes, '流量上限'), usedBytes: 0,
+        expiresAt: optionalIso(body.expiresAt, '到期日期'),
+        ipLimit: nonNegativeNumber(body.ipLimit, 'IP 上限', true), deviceLimit: nonNegativeNumber(body.deviceLimit, '设备上限', true),
         tags: asIds(body.tags).slice(0, 20), notes: cleanText(body.notes, 1000),
         createdAt: nowIso(), updatedAt: nowIso()
       };
@@ -383,16 +480,46 @@ async function handleAdminApi(req, res, pathname) {
     const customer = await store.transaction((data) => {
       const item = data.customers.find((entry) => entry.id === customerItem.id);
       if (!item) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
-      for (const key of ['name', 'group', 'notes']) if (key in body) item[key] = cleanText(body[key], key === 'notes' ? 1000 : 120);
-      for (const key of ['trafficLimitBytes', 'ipLimit', 'deviceLimit']) if (key in body) item[key] = Math.max(0, Number(body[key] || 0));
-      if ('expiresAt' in body) item.expiresAt = body.expiresAt ? new Date(body.expiresAt).toISOString() : null;
-      if ('status' in body && ['active', 'suspended'].includes(body.status)) item.status = body.status;
+      if ('name' in body) item.name = requiredText(body.name, '客户名称');
+      if ('group' in body) item.group = cleanText(body.group, 80);
+      if ('notes' in body) item.notes = cleanText(body.notes, 1000);
+      if ('trafficLimitBytes' in body) item.trafficLimitBytes = nonNegativeNumber(body.trafficLimitBytes, '流量上限');
+      if ('ipLimit' in body) item.ipLimit = nonNegativeNumber(body.ipLimit, 'IP 上限', true);
+      if ('deviceLimit' in body) item.deviceLimit = nonNegativeNumber(body.deviceLimit, '设备上限', true);
+      if ('expiresAt' in body) item.expiresAt = optionalIso(body.expiresAt, '到期日期');
+      if ('tags' in body) item.tags = asIds(body.tags).slice(0, 20);
+      if ('status' in body && ['active', 'suspended'].includes(body.status)) {
+        item.status = body.status;
+        item.suspendReason = body.status === 'active' ? null : (item.suspendReason || 'manual');
+        if (body.status === 'suspended') {
+          for (const deployment of data.deployments.filter((entry) => entry.customerId === item.id && entry.status === 'active')) {
+            const alreadyQueued = data.jobs.some((job) => job.deploymentId === deployment.id && job.action === 'delete_resource' && ['queued', 'running'].includes(job.status));
+            if (!alreadyQueued) {
+              data.jobs.push({ id: id('job'), serverId: deployment.serverId, deploymentId: deployment.id, action: 'delete_resource', payload: { resourceId: deployment.resourceId }, status: 'queued', attempts: 0, createdAt: nowIso(), updatedAt: nowIso(), error: null, leaseUntil: null });
+              deployment.status = 'removing'; deployment.updatedAt = nowIso();
+            }
+          }
+        } else {
+          for (const chain of data.chains.filter((entry) => entry.customerIds.includes(item.id) && ['active', 'degraded'].includes(entry.status))) {
+            chain.status = 'changes_pending'; chain.updatedAt = nowIso();
+          }
+        }
+      }
       item.updatedAt = nowIso();
       audit(data, actor, 'update_customer', item.id);
       return structuredClone(item);
     });
     sendJson(res, 200, { customer });
     return true;
+  }
+  const resetUsage = route('/api/customers/:id/reset-usage', pathname);
+  if (resetUsage && req.method === 'POST') {
+    await store.transaction((data) => {
+      const item = data.customers.find((entry) => entry.id === resetUsage.id);
+      if (!item) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
+      item.usedBytes = 0; item.updatedAt = nowIso(); audit(data, actor, 'reset_customer_usage', item.id);
+    });
+    sendJson(res, 200, { ok: true }); return true;
   }
   if (customerItem && req.method === 'DELETE') {
     await store.transaction((data) => {
@@ -417,17 +544,9 @@ async function handleAdminApi(req, res, pathname) {
     const body = await readJson(req);
     const chain = await store.transaction((data) => {
       const next = {
-        id: id('chn'), name: requiredText(body.name, '链路名称'), status: 'draft',
-        relayServerIds: asIds(body.relayServerIds), exitServerId: requiredText(body.exitServerId, '落地服务器 ID'),
-        customerIds: asIds(body.customerIds), relayProtocol: cleanText(body.relayProtocol, 64),
-        exitProtocol: cleanText(body.exitProtocol, 64),
-        relayPortMode: body.relayPortMode === 'fixed' ? 'fixed' : 'random', relayPort: body.relayPort ? Number(body.relayPort) : null,
-        exitPortMode: body.exitPortMode === 'fixed' ? 'fixed' : 'random', exitPort: body.exitPort ? Number(body.exitPort) : null,
-        realityServerName: cleanText(body.realityServerName || 'www.microsoft.com', 255),
-        realityDestPort: Number(body.realityDestPort || 443),
-        createdAt: nowIso(), updatedAt: nowIso()
+        ...normalizeChain(body), id: id('chn'), status: 'draft', generation: 0,
+        createdAt: nowIso(), updatedAt: nowIso(), redeployPending: false
       };
-      if (!next.relayServerIds.length || !next.customerIds.length) throw Object.assign(new Error('请选择中转服务器和客户'), { statusCode: 400 });
       data.chains.push(next);
       audit(data, actor, 'create_chain', next.id, { name: next.name });
       return structuredClone(next);
@@ -447,7 +566,24 @@ async function handleAdminApi(req, res, pathname) {
     sendJson(res, 202, { jobs: count });
     return true;
   }
+  const redeploy = route('/api/chains/:id/redeploy', pathname);
+  if (redeploy && req.method === 'POST') { const count = await orchestrator.removeChain(redeploy.id, actor, true); sendJson(res, 202, { jobs: count }); return true; }
+  const repair = route('/api/chains/:id/repair', pathname);
+  if (repair && req.method === 'POST') { const count = await orchestrator.repairChain(repair.id, actor); sendJson(res, 202, { jobs: count }); return true; }
   const chainItem = route('/api/chains/:id', pathname);
+  if (chainItem && req.method === 'PATCH') {
+    const body = await readJson(req);
+    const chain = await store.transaction((data) => {
+      const item = data.chains.find((entry) => entry.id === chainItem.id);
+      if (!item) throw Object.assign(new Error('线路不存在'), { statusCode: 404 });
+      const hasActive = data.deployments.some((entry) => entry.chainId === item.id && !['deleted', 'failed'].includes(entry.status));
+      Object.assign(item, normalizeChain(body, item), { updatedAt: nowIso() });
+      item.status = hasActive ? 'changes_pending' : 'draft';
+      audit(data, actor, 'update_route', item.id, { requiresRedeploy: hasActive });
+      return { item: structuredClone(item), requiresRedeploy: hasActive };
+    });
+    sendJson(res, 200, { chain: chain.item, requiresRedeploy: chain.requiresRedeploy }); return true;
+  }
   if (chainItem && req.method === 'DELETE') {
     await store.transaction((data) => {
       const index = data.chains.findIndex((item) => item.id === chainItem.id);
@@ -493,7 +629,7 @@ async function requestHandler(req, res) {
   const pathname = url.pathname;
   try {
     if (pathname === '/healthz') {
-      sendJson(res, 200, { ok: true, version: '0.1.0', time: nowIso() });
+      sendJson(res, 200, { ok: true, version: VERSION, time: nowIso() });
       return;
     }
     if (await handleAuth(req, res, pathname)) return;
@@ -514,10 +650,23 @@ async function requestHandler(req, res) {
 
 async function housekeeping() {
   try {
-    await store.transaction((data) => {
+    const redeployIds = await store.transaction((data) => {
       const now = Date.now();
       for (const server of data.servers) {
-        if (server.lastSeenAt && now - new Date(server.lastSeenAt).getTime() > 120000) server.status = 'offline';
+        if (server.lastSeenAt && now - new Date(server.lastSeenAt).getTime() > 180000) server.status = 'offline';
+      }
+      for (const job of data.jobs.filter((item) => item.status === 'running' && item.leaseUntil && new Date(item.leaseUntil).getTime() <= now)) {
+        job.leaseUntil = null; job.updatedAt = nowIso();
+        if (Number(job.attempts || 0) < 3) { job.status = 'queued'; job.error = 'Agent 未在租约内确认，任务已自动重试'; }
+        else {
+          job.status = 'failed'; job.error = 'Agent 连续 3 次未在租约内确认';
+          const deployment = data.deployments.find((item) => item.id === job.deploymentId);
+          if (deployment) {
+            deployment.status = 'failed'; deployment.error = job.error; deployment.updatedAt = nowIso();
+            const chain = data.chains.find((item) => item.id === deployment.chainId);
+            if (chain) { chain.status = 'degraded'; chain.updatedAt = nowIso(); }
+          }
+        }
       }
       for (const customer of data.customers) {
         const expired = customer.expiresAt && new Date(customer.expiresAt).getTime() <= now;
@@ -543,7 +692,18 @@ async function housekeeping() {
       data.jobs = data.jobs.filter((job) => !['completed', 'failed'].includes(job.status) || new Date(job.updatedAt).getTime() > jobCutoff);
       const activityCutoff = now - (data.settings.activityRetentionDays || 30) * 86400000;
       data.activity = data.activity.filter((event) => new Date(event.at).getTime() > activityCutoff).slice(0, 2000);
+      return data.chains.filter((item) => item.status === 'redeploy_pending').map((item) => item.id);
     });
+    for (const chainId of redeployIds) {
+      try { await orchestrator.deployChain(chainId, 'system:redeploy'); }
+      catch (error) {
+        console.error(`Automatic redeploy failed for ${chainId}:`, error);
+        await store.transaction((data) => {
+          const chain = data.chains.find((item) => item.id === chainId);
+          if (chain) { chain.status = 'degraded'; chain.lastError = String(error.message || error); chain.updatedAt = nowIso(); }
+        });
+      }
+    }
     sessions.prune();
   } catch (error) {
     console.error('Housekeeping failed:', error);
@@ -567,7 +727,7 @@ async function main() {
   const server = http.createServer(requestHandler);
   server.requestTimeout = 30000;
   server.headersTimeout = 15000;
-  server.listen(PORT, HOST, () => console.log(`NexusGate v0.1.0 listening on http://${HOST}:${PORT}`));
+  server.listen(PORT, HOST, () => console.log(`NexusGate v${VERSION} listening on http://${HOST}:${PORT}`));
   setInterval(housekeeping, 60000).unref();
 }
 

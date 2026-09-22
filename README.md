@@ -1,100 +1,182 @@
 # NexusGate（枢门）
 
-面向多中转机、多落地机和团队客户的轻量集中编排面板。一个控制面统一管理服务器、客户额度和跨机链路，不再为每台机器分别安装、打开和维护一套面板。
+面向多入口机、多出口机和多客户场景的轻量集中编排面板。一个控制面统一管理设备、客户额度、转发线路、单机节点、部署任务和客户端链接，不再逐台打开不同面板维护。
 
-> 当前版本：`v0.1.0` 技术预览。可安装、可管理、可下发真实 Xray 配置，但在生产迁移前应先用测试服务器验证协议兼容性和防火墙规则。
+> 当前版本：`v0.2.0`。已能下发真实 Xray 配置，适合先在测试设备验证；正式迁移前仍需验证客户端兼容性、云安全组和系统防火墙。
 
-## 为什么做这个项目
+## 核心模型
 
-传统单机面板擅长管理一台 VPS，但在「10 台中转 + 数十台落地 + 数百客户」的场景中，会出现面板入口分散、凭据分散、批量变更困难，以及中转与落地协议被错误绑定的问题。
-
-NexusGate 把它们拆成三个层次：
+NexusGate 把管理面与流量面分开。客户流量不会经过控制面，控制面只负责把期望配置下发给各设备 Agent。
 
 ```mermaid
-flowchart LR
-  C[客户端入口] --> R[中转 Agent]
-  R --> E[落地 Agent]
+flowchart TB
+  P[统一控制面] --> A[入口 Agent 集群]
+  P --> E[出口 Agent 集群]
+  C[客户端] --> A
+  A --> E
   E --> I[互联网]
-  P[统一控制面] --> R
-  P --> E
+  C -. 单机直连 .-> D[直连节点 Agent]
+  P --> D
+  D --> I
 ```
 
-- 控制面：客户、额度、到期、链路模板、任务和审计。
-- Agent：主动出站连接控制面，不要求控制面保存 SSH 密码。
-- Xray-core：运行数据面；Agent 先校验完整配置，再原子切换。
+- **转发线路**：一台或多台入口设备 → 一台出口设备；客户端协议与入口到出口传输协议可以不同。
+- **单机直连**：无需出口设备，直接在选定设备创建客户端节点。
+- **Agent 主动连接**：控制面不保存各设备的 SSH 密码。
+- **一条线路统一维护**：编辑、修复、停用、重建不再分别操作每台服务器。
 
-项目参考了 [3X-UI](https://github.com/MHSanaei/3x-ui) 的易用性和 Xray 管理经验，但代码为独立实现，不复制其源代码。Xray-core 由 [XTLS/Xray-core](https://github.com/XTLS/Xray-core) 单独提供并遵循其 MPL-2.0 许可。
+## v0.2 已实现
 
-## 已实现
+- 默认明亮、可切换暗色的中文响应式 UI，登录页采用左右分栏设计。
+- 导航统一为“设备管理、客户额度、线路编排、节点与订阅、系统运维”。
+- 设备、客户、线路均可创建后编辑；运行中线路修改后进入“待重新部署”。
+- 支持完整重建失败线路，以及只重试失败部署项。
+- Agent 重装后自动撤销旧密钥、重新对账并恢复已有资源。
+- 任务 5 分钟租约、超时自动重试，连续 3 次失败才标记异常。
+- 客户到期使用日期选择器、常用期限下拉和时间下拉，不要求手写日期格式。
+- 客户独立凭据、流量额度、到期、滚动 IP 上限、用量清零及启停。
+- Reality 私钥只在节点机生成；控制面只接收客户端公钥。
+- Tesla、Amazon、Apple、Intel、AMD Reality 目标预设，也可自定义。
+- IPv4、IPv6 和双栈监听；IPv6 客户端链接会自动使用方括号格式。
+- JSON 在线备份/恢复，以及包含数据、环境和 Caddy 配置的迁移压缩包。
+- 后台修改登录账号和密码；修改后强制重新登录。
+- `ng` 运维菜单：升级、域名、证书、备份、恢复、密码、状态、日志、重启和卸载。
+- Agent 支持 Debian/Ubuntu、RHEL 系 systemd，以及 Alpine OpenRC。
 
-- 多中转、多落地服务器集中登记、地区/标签与端口池。
-- 一次选择多台中转、一台落地和多个客户进行批量编排。
-- 中转入口与落地传输解耦，例如：
-  - `VLESS + Reality + Vision → Shadowsocks 2022 AES-128`
-  - `Shadowsocks 2022 AES-128 → Shadowsocks 2022 AES-128`
-  - `VMess + WebSocket → Shadowsocks AES-128-GCM / 2022`
-- 每位客户独立凭据、流量额度、到期时间和并发 IP 策略。
-- Xray Stats 流量采集；超额或到期后自动下发移除任务。
-- 基于访问日志的滚动 IP 观察与超限停用（默认 10 分钟窗口）。
-- Reality 私钥只在目标服务器生成和保存，控制面接收客户端公钥。
-- 任务队列、错误状态、审计记录与自动清理。
-- 响应式中文 UI；登录页使用中性措辞。
-- JSON 在线备份/恢复，以及 `ng` 命令生成压缩迁移包。
-- Debian 12 / Ubuntu 一键安装、Caddy 自动 HTTPS 与域名反代。
-- 无 npm 运行依赖；控制面和 Agent 都只需要 Node.js 18+。
+## 协议矩阵
 
-## 协议状态
-
-| 场景 | 协议 | 状态 |
+| 用途 | 协议 | 状态 |
 | --- | --- | --- |
-| 客户 → 中转 | VLESS + Reality + Vision | 稳定配置适配器 |
-| 客户 → 中转 | Shadowsocks 2022 AES-128 | 稳定配置适配器 |
-| 客户 → 中转 | VMess + WebSocket（无 TLS） | 测试版，不建议直接暴露生产流量 |
-| 中转 → 落地 | Shadowsocks 2022 AES-128 | 稳定配置适配器 |
-| 中转 → 落地 | Shadowsocks AES-128-GCM | 稳定配置适配器 |
-| Hysteria2 / TUIC / WireGuard / Trojan / XHTTP | — | 路线图，当前不会伪装成已支持 |
+| 客户入口 / 单机节点 | VLESS + Reality + Vision | 可部署 |
+| 客户入口 / 单机节点 | VLESS + Reality | 可部署 |
+| 客户入口 / 单机节点 | VLESS + WebSocket（无 TLS） | 可部署，建议仅配合可信网络或外层 TLS |
+| 客户入口 / 单机节点 | VMess + WebSocket（无 TLS） | 可部署，兼容模式 |
+| 客户入口 / 单机节点 | Shadowsocks 2022 AES-128 / AES-256 | 可部署 |
+| 客户入口 / 单机节点 | Shadowsocks AES-128-GCM / AES-256-GCM | 可部署 |
+| 客户入口 / 单机节点 | SOCKS5 用户密码 | 可部署，仅建议可信网络或外层隧道 |
+| 入口 → 出口 | 上述四种 Shadowsocks | 可部署 |
+| 入口 → 出口 | VLESS TCP | 可部署，建议可信网络或外层隧道 |
+| 入口 → 出口 | SOCKS5 用户密码 | 可部署，仅建议可信网络或外层隧道 |
+| 客户入口 | VLESS WS TLS / Hysteria2 / AnyTLS | UI 显示“规划中”，当前禁止下发 |
 
-设备数量不能仅靠客户端上报可信地判断。`v0.1` 保存设备上限策略，但实际强制执行依赖后续的「一设备一凭据」签发；当前已实际执行的是流量、到期和滚动 IP 上限。
+Hysteria2 和 AnyTLS 需要 sing-box/QUIC/TLS 证书管理链路，VLESS WS TLS 也需要节点域名与证书自动化。项目不会把未完成的适配器伪装成可用功能。
+
+> “设备数量”无法通过一个共享客户端链接可靠识别。v0.2 保存设备策略上限，但暂不强制；后续需要“一设备一凭据”签发。当前真正执行的是流量、到期和滚动 IP 上限。
 
 ## 安装控制面
 
-准备一台 Debian 12 / Ubuntu VPS，并把域名 A/AAAA 记录解析到它：
+准备一台 Debian 12 或 Ubuntu 22.04/24.04 VPS，把面板域名的 A/AAAA 记录解析到它，并放行 TCP 80、443：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/install.sh)
 ```
 
-安装器会提示域名和证书邮箱，自动安装 Node.js、Caddy、systemd 服务，并输出首次登录密码。也可非交互安装：
+非交互安装：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/install.sh) \
   --domain gate.example.com --email admin@example.com
 ```
 
-登录后：
+安装器会部署 Node.js、Caddy、systemd 服务，启用自动 HTTPS，并输出首次登录密码。
 
-1. 在「服务器」添加中转机和落地机。
-2. 点击「注册命令」。
-3. 在对应 VPS 以 root 执行一次性命令。
-4. 添加客户并创建链路，然后点击部署。
+登录后的顺序：
 
-> 防火墙和云安全组需要放行服务器端口池。默认范围为 TCP/UDP `20000–50000`，建议按实际使用缩小。
+1. 在“设备管理”添加入口、出口或综合节点。
+2. 点击“注册 / 重装”，复制一次性命令到目标 VPS 以 root 执行。
+3. 在“客户额度”创建客户。
+4. 在“线路编排”选择转发线路或单机直连，选择协议、设备、客户和端口策略。
+5. 点击部署，在“节点与订阅”复制成功生成的客户端链接。
 
-## 运维命令
+> 云安全组和系统防火墙必须放行实际使用的 TCP/UDP 端口。默认端口池为 `20000–50000`，生产环境建议按设备缩小范围。
 
-```bash
-ng                 # 交互菜单
-ng status          # 服务状态
-ng logs 200        # 最近日志
-ng restart         # 重启控制面与反代
-ng backup          # 备份到 /root
-ng restore         # 恢复 /root 下最新备份
-ng update          # 备份后更新
-ng domain new.example.com
-ng password        # 安全地重置管理员密码
+### Alpine Agent
+
+Alpine 首次执行前如果没有 Bash：
+
+```sh
+apk add --no-cache bash curl
 ```
 
-迁移到新服务器时，先安装 NexusGate，把备份包上传到 `/root`，再运行 `ng restore /root/文件名.tar.gz`。
+然后运行面板生成的同一条注册命令。安装器会自动使用 OpenRC。
+
+## 升级
+
+控制面一键升级会先自动备份，再下载 GitHub `main` 分支并执行健康检查：
+
+```bash
+ng update
+```
+
+旧版 Agent 可保留当前注册密钥原地升级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/agent-update.sh | bash
+```
+
+新安装的 Agent 以后直接运行：
+
+```bash
+ng-agent-update
+```
+
+如果某台设备已出现“上线后又离线”，在控制面为该设备重新生成一次“注册 / 重装”命令并执行。v0.2 安装器会显式重启旧进程，并自动恢复控制面记录的资源。
+
+## `ng` 管理菜单
+
+```bash
+ng                         # 交互菜单
+ng update                  # 备份、升级、健康检查
+ng domain new.example.com  # 更换面板域名
+ng cert                    # 校验 Caddy 并检查证书日志
+ng backup                  # 生成 /root/nexusgate-backup-*.tar.gz
+ng restore /root/文件.tar.gz
+ng password admin          # 重置指定管理员密码
+ng status
+ng restart
+ng logs 200
+ng uninstall               # 确认后先备份再卸载
+```
+
+Caddy 会自动申请和续签证书，不需要定时手工续签；`ng cert` 用于校验配置、重新加载并查看最近证书日志。
+
+## 容灾迁移
+
+NexusGate v0.2 是单控制面、冷备恢复模型，不支持两台控制面同时写同一个 JSON 数据库。
+
+1. 提前降低面板域名 DNS TTL。
+2. 在旧控制面执行 `ng backup`，下载 `/root/nexusgate-backup-*.tar.gz`。
+3. 在新 Debian/Ubuntu 服务器安装 NexusGate，使用原面板域名。
+4. 把压缩包上传到新服务器 `/root`，执行 `ng restore /root/文件名.tar.gz`。
+5. 把 Cloudflare/DNS 的 A/AAAA 记录改为新服务器 IP，并确保 80/443 放行。
+6. Caddy 获取证书后，各 Agent 仍连接同一域名，会自动恢复上报；无需逐台更改控制面地址。
+
+迁移包包含：控制面数据库、登录/运行环境配置和 Caddy 站点配置。恢复前系统还会在 `/root` 自动再生成一份安全快照。
+
+## 配置建议
+
+控制面不承载客户流量，主要消耗来自 Agent 心跳、任务和统计写入。
+
+| 规模 | 建议控制面配置 | 说明 |
+| --- | --- | --- |
+| 测试 / 20 台以内 | 1 vCPU / 1 GB / 20 GB SSD | 可运行，不建议承担关键业务 |
+| 20–100 台、数百客户 | 2 vCPU / 2–4 GB / 40 GB NVMe | 推荐生产起点 |
+| 100–300 台、约千名客户 | 4 vCPU / 8 GB / 80 GB NVMe | 需要监控磁盘延迟并缩短日志保留 |
+| 更大规模或多管理员高频操作 | PostgreSQL/队列版 | 当前 JSON 单机版不建议继续横向放大 |
+
+Agent 节点推荐至少 `1 vCPU / 512 MB`，更稳妥为 `1 vCPU / 1 GB`。节点能承载多少用户主要取决于带宽、连接数、加密协议和线路质量，而不是控制面配置。
+
+## 轻量与安全设计
+
+- 控制面和 Agent 均无 npm 运行依赖，只要求 Node.js 18+。
+- Agent API Key 使用指纹快速定位，再用 scrypt 校验，避免大量心跳反复全表执行慢哈希。
+- 数据文件、备份和 Agent 环境文件默认权限为 `0600`。
+- 登录 Cookie 为 HttpOnly、SameSite=Strict，HTTPS 下启用 Secure；写操作需要 CSRF Token。
+- Xray 配置先执行 `run -test`，通过后才原子切换；失败会回滚资源文件。
+- Agent 重启会从持久化资源目录重建完整 Xray 配置。
+- 仅在你有权管理的服务器和网络上使用，并遵守所在地法律和服务商政策。
+
+更完整的说明见 [架构](docs/ARCHITECTURE.md)、[安全模型](docs/SECURITY.md) 和 [路线图](docs/ROADMAP.md)。
 
 ## 本地开发
 
@@ -105,25 +187,7 @@ npm test
 npm start
 ```
 
-打开 <http://127.0.0.1:8787>，账号为 `admin`。
-
-## 资源占用与规模
-
-控制面是无外部运行依赖的单 Node.js 进程，数据采用原子写入的本地 JSON 文件。几十台服务器、数百客户和低频管理操作可从 `1 vCPU / 1 GB RAM / 20 GB` 起步；生产环境更推荐 `2 vCPU / 2 GB RAM / 30 GB`。数据面流量不经过控制面，因此控制面带宽不会随客户流量等比例增长。
-
-当规模达到数千客户、持续高频统计或多管理员并发时，应迁移到路线图中的 PostgreSQL 存储后端。
-
-## 安全说明
-
-- Agent 注册令牌 30 分钟过期且只能使用一次。
-- 登录密码与 Agent API Key 使用 scrypt 哈希保存。
-- 会话 Cookie 为 HttpOnly、SameSite=Strict，并在 HTTPS 部署下启用 Secure。
-- 所有写操作需要会话 CSRF Token。
-- 数据文件、备份和 Agent 环境文件默认权限为 `0600`。
-- 备份包含客户凭据，必须按敏感文件管理。
-- 仅限在你有权管理的服务器和网络上使用，并遵守所在地法律与服务商政策。
-
-更完整的威胁模型见 [docs/SECURITY.md](docs/SECURITY.md)，架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，计划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+打开 <http://127.0.0.1:8787>，默认账号为 `admin`。
 
 ## 许可
 

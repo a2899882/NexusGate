@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "${EUID}" -eq 0 ]] || die "请使用 root 运行"
-[[ -f /etc/debian_version ]] || die "v0.1 一键安装器当前支持 Debian 12 / Ubuntu"
+[[ -f /etc/debian_version ]] || die "控制面一键安装器当前支持 Debian 12 / Ubuntu 22.04+"
 [[ ! -e /opt/nexusgate ]] || die "检测到已有安装，请运行 nexusgate update"
 
 if [[ -z "$DOMAIN" ]]; then DOMAIN="$(ask '请输入面板域名（如 gate.example.com）：')"; fi

@@ -2,25 +2,48 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], search: ''
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.2.0'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const esc = (value) => String(value == null ? '' : value).replace(/[&<>'"]/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
+const selected = (value, current) => String(value) === String(current) ? ' selected' : '';
+const checked = (value, values) => (values || []).includes(value) ? ' checked' : '';
 const fmtDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
 const fmtBytes = (value) => {
-  let size = Number(value || 0); const units = ['B','KB','MB','GB','TB']; let index = 0;
+  let size = Number(value || 0); const units = ['B','KB','MB','GB','TB','PB']; let index = 0;
   while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
   return `${size >= 10 || index === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[index]}`;
 };
-const statusText = { online:'在线', offline:'离线', pending:'待注册', active:'运行中', draft:'草稿', deploying:'部署中', queued:'排队中', running:'执行中', completed:'已完成', failed:'失败', degraded:'异常', suspended:'已停用', removing:'移除中', deleted:'已删除' };
-const roleText = { relay:'中转', exit:'落地', hybrid:'混合' };
+const splitList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+const statusText = {
+  online:'在线', offline:'离线', pending:'待注册', active:'运行中', draft:'草稿', deploying:'部署中', queued:'排队中',
+  running:'执行中', completed:'已完成', failed:'失败', degraded:'异常', suspended:'已停用', removing:'停用中', deleted:'已删除',
+  redeploying:'重建中', redeploy_pending:'等待重建', changes_pending:'待重新部署'
+};
+const roleText = { relay:'入口 / 转发', exit:'出口 / 落地', hybrid:'综合节点' };
+const topologyText = { forward:'转发线路', direct:'单机直连' };
+const deploymentRoleText = { relay:'客户端入口', exit:'出口传输', direct:'单机节点' };
+const auditText = {
+  create_server:'添加设备', update_server:'编辑设备', delete_server:'删除设备', create_enrollment:'生成注册令牌', enroll_agent:'Agent 注册',
+  reconcile_server:'设备配置对账', create_customer:'添加客户', update_customer:'编辑客户', reset_customer_usage:'重置客户流量', delete_customer:'删除客户',
+  create_chain:'创建线路', update_route:'编辑线路', deploy_route:'部署线路', redeploy_route:'重新部署线路', repair_route:'修复线路', remove_route:'停用线路',
+  delete_chain:'删除线路', update_account:'修改管理员账号', suspend_ip_limit:'IP 超限停用'
+};
+
+function setTheme(theme) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('nexusgate-theme', next);
+  document.querySelector('meta[name="theme-color"]').content = next === 'dark' ? '#0e1421' : '#f4f7fb';
+  $$('[data-theme-toggle]').forEach((button) => { button.textContent = next === 'dark' ? '☀' : '◐'; button.title = next === 'dark' ? '切换为明亮主题' : '切换为暗色主题'; });
+}
 
 function toast(message, error = false) {
   const item = document.createElement('div');
   item.className = `toast${error ? ' error' : ''}`; item.textContent = message;
-  $('#toasts').append(item); setTimeout(() => item.remove(), 3600);
+  $('#toasts').append(item); setTimeout(() => item.remove(), 3800);
 }
 
 async function api(path, options = {}) {
@@ -41,60 +64,72 @@ function showLogin() {
 }
 function showApp() {
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
-  $('#user-chip').textContent = `${state.session.user.username} · ${state.session.user.role}`;
+  $('#user-chip').textContent = `${state.session.user.username} · 管理员`;
 }
 
 async function load(page = state.page) {
   try {
-    if (page === 'overview') state.overview = await api('/api/overview');
-    if (['servers','chains','overview'].includes(page)) state.servers = (await api('/api/servers')).servers;
-    if (['customers','chains','overview'].includes(page)) state.customers = (await api('/api/customers')).customers;
-    if (['chains','deployments','overview'].includes(page)) {
-      const result = await api('/api/chains'); state.chains = result.chains; state.deployments = result.deployments;
+    if (page === 'overview') {
+      const [overview, servers, customers, routes] = await Promise.all([api('/api/overview'), api('/api/servers'), api('/api/customers'), api('/api/chains')]);
+      state.overview = overview; state.version = overview.version || state.version; state.servers = servers.servers; state.customers = customers.customers; state.chains = routes.chains; state.deployments = routes.deployments;
+    } else if (page === 'servers') state.servers = (await api('/api/servers')).servers;
+    else if (page === 'customers') state.customers = (await api('/api/customers')).customers;
+    else if (page === 'chains') {
+      const [servers, customers, routes, protocols] = await Promise.all([api('/api/servers'), api('/api/customers'), api('/api/chains'), api('/api/protocols')]);
+      state.servers = servers.servers; state.customers = customers.customers; state.chains = routes.chains; state.deployments = routes.deployments;
+      state.protocols = protocols.profiles; state.realityPresets = protocols.realityPresets || [];
+    } else if (page === 'deployments') {
+      const [servers, customers, routes] = await Promise.all([api('/api/servers'), api('/api/customers'), api('/api/chains')]);
+      state.servers = servers.servers; state.customers = customers.customers; state.chains = routes.chains; state.deployments = routes.deployments;
+    } else if (page === 'operations') {
+      const [jobs, servers, overview] = await Promise.all([api('/api/jobs'), api('/api/servers'), api('/api/overview')]);
+      state.jobs = jobs.jobs; state.servers = servers.servers; state.overview = overview; state.version = overview.version || state.version;
     }
-    if (page === 'chains' && !state.protocols.length) state.protocols = (await api('/api/protocols')).profiles;
-    if (['deployments','operations'].includes(page)) state.jobs = (await api('/api/jobs')).jobs;
     render();
   } catch (error) { toast(error.message, true); }
 }
 
 function setPage(page) {
-  state.page = page; state.search = '';
+  state.page = page; state.search = ''; closeSidebar();
   $$('#nav button').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
-  const titles = { overview:'运行总览', servers:'服务器资源', customers:'客户与额度', chains:'链路编排', deployments:'部署与订阅', operations:'运维中心' };
+  const titles = { overview:'运行总览', servers:'设备管理', customers:'客户额度', chains:'线路编排', deployments:'节点与订阅', operations:'系统运维' };
   $('#page-title').textContent = titles[page]; $('#breadcrumb').textContent = `NEXUSGATE / ${titles[page]}`;
   load(page);
 }
 
 function status(value) { return `<span class="status ${esc(value)}">${esc(statusText[value] || value)}</span>`; }
 function tags(values) { return (values || []).map((value) => `<span class="tag">${esc(value)}</span>`).join('') || '—'; }
-function empty(title, note) { return `<div class="empty"><b>${esc(title)}</b>${esc(note)}</div>`; }
+function empty(title, note) { return `<div class="empty"><b>${esc(title)}</b><span>${esc(note)}</span></div>`; }
+function names(ids, collection) { return (ids || []).map((key) => (collection.find((item) => item.id === key) || {}).name || '已删除').join('、'); }
+function protocolName(id, role) { return (state.protocols.find((item) => item.id === id && (!role || item.role === role)) || {}).name || id || '—'; }
 
 function renderOverview() {
   const counts = (state.overview && state.overview.counts) || {};
   const metrics = [
-    ['服务器', counts.servers || 0, `${counts.online || 0} 台在线`, '#69e1c1'],
-    ['客户', counts.customers || 0, '统一额度与到期策略', '#7aa7ff'],
-    ['链路', counts.chains || 0, '入口与落地解耦', '#b98cff'],
-    ['活动部署', counts.activeDeployments || 0, '受控资源', '#f6c761'],
-    ['待处理任务', counts.queuedJobs || 0, 'Agent 自动领取', '#ff8aa0']
+    ['受管设备', counts.servers || 0, `${counts.online || 0} 台在线`, '#38bd91'],
+    ['客户账户', counts.customers || 0, '额度与到期统一管理', '#5877f4'],
+    ['编排线路', counts.chains || 0, '转发与单机节点', '#9667e8'],
+    ['活动部署', counts.activeDeployments || 0, '实际运行资源', '#e8a63c'],
+    ['待办任务', counts.queuedJobs || 0, 'Agent 自动领取', '#e5667c']
   ];
-  const serverRows = state.servers.slice(0, 6).map((server) => `<div class="health-row"><div><b>${esc(server.name)}</b><span>${esc(server.region || server.publicAddress)}</span></div>${status(server.status)}</div>`).join('');
-  const events = ((state.overview && state.overview.activity) || []).map((event) => `<div class="event"><i class="event-dot"></i><div><b>${esc(event.action)}</b><small>${esc(event.actor)} · ${esc(event.target)}</small></div><time>${fmtDate(event.at)}</time></div>`).join('');
+  const serverRows = state.servers.slice(0, 7).map((server) => `<div class="health-row"><div><b>${esc(server.name)}</b><span>${esc(roleText[server.role] || server.role)} · ${esc(server.region || server.publicAddress)}</span></div>${status(server.status)}</div>`).join('');
+  const events = ((state.overview && state.overview.activity) || []).map((event) => `<div class="event"><i class="event-dot"></i><div><b>${esc(auditText[event.action] || event.action)}</b><small>${esc(event.actor)} · ${esc(event.target)}</small></div><time>${fmtDate(event.at)}</time></div>`).join('');
+  const failures = ((state.overview && state.overview.degraded) || []).length;
   return `<section class="metrics">${metrics.map(([label,value,note,color]) => `<article class="metric" style="--accent:${color}"><span>${label}</span><strong>${value}</strong><small>${note}</small></article>`).join('')}</section>
-    <section class="grid-2"><article class="panel"><div class="panel-head"><div><h2>资源健康</h2><p>两分钟未上报将自动标记离线</p></div><button class="ghost" data-page-jump="servers">查看全部</button></div><div class="panel-body health-list">${serverRows || empty('还没有服务器','添加第一台中转或落地服务器')}</div></article>
-    <article class="panel"><div class="panel-head"><div><h2>最近活动</h2><p>保留 30 天审计记录</p></div></div><div class="panel-body timeline">${events || empty('暂无活动','操作记录会显示在这里')}</div></article></section>`;
+    ${failures ? `<div class="notice warning" style="margin-bottom:16px">检测到 ${failures} 个失败部署。请到“线路编排”查看错误后使用“修复”或“重新部署”。</div>` : ''}
+    <section class="grid-2"><article class="panel"><div class="panel-head"><div><h2>设备健康</h2><p>超过三分钟未上报将标记离线</p></div><button class="ghost" data-page-jump="servers">查看全部</button></div><div class="panel-body health-list">${serverRows || empty('还没有设备','先添加入口、出口或综合节点')}</div></article>
+    <article class="panel"><div class="panel-head"><div><h2>最近活动</h2><p>重要操作审计记录</p></div></div><div class="panel-body timeline">${events || empty('暂无活动','操作记录会显示在这里')}</div></article></section>`;
 }
 
 function renderServers() {
   const q = state.search.toLowerCase();
-  const rows = state.servers.filter((item) => [item.name,item.region,item.publicAddress,...(item.labels || [])].join(' ').toLowerCase().includes(q)).map((server) => `<tr>
-    <td><strong>${esc(server.name)}</strong><small>${esc(server.publicAddress)}</small></td><td>${esc(roleText[server.role] || server.role)}</td><td>${esc(server.region || '未分组')}</td>
-    <td>${tags(server.labels)}</td><td>${status(server.status)}<small>${server.lastSeenAt ? fmtDate(server.lastSeenAt) : '尚未注册'}</small></td>
-    <td><div class="actions"><button data-action="enroll-server" data-id="${esc(server.id)}">注册命令</button><button class="danger" data-action="delete-server" data-id="${esc(server.id)}">删除</button></div></td></tr>`).join('');
-  return `<div class="page-intro"><p>集中登记全部中转机与落地机。Agent 只需主动连接控制面，无需保存各台服务器的 SSH 密码。</p><button class="primary" data-action="add-server">＋ 添加服务器</button></div>
+  const rows = state.servers.filter((item) => [item.name,item.region,item.publicAddress,item.publicAddressV6,...(item.labels || [])].join(' ').toLowerCase().includes(q)).map((server) => `<tr>
+    <td><strong>${esc(server.name)}</strong><small>${esc(server.publicAddress)}${server.publicAddressV6 ? ` · ${esc(server.publicAddressV6)}` : ''}</small></td><td>${esc(roleText[server.role] || server.role)}</td><td>${esc(server.region || '未分组')}</td>
+    <td>${tags(server.labels)}</td><td>${status(server.status)}<small>${server.lastSeenAt ? `最后上报 ${fmtDate(server.lastSeenAt)}` : '等待 Agent 注册'}</small></td>
+    <td><div class="actions"><button data-action="edit-server" data-id="${esc(server.id)}">编辑</button><button data-action="enroll-server" data-id="${esc(server.id)}">注册 / 重装</button><button class="danger" data-action="delete-server" data-id="${esc(server.id)}">删除</button></div></td></tr>`).join('');
+  return `<div class="page-intro"><p>统一管理入口转发机、出口落地机与单机节点。Agent 主动连接控制面，不保存设备 SSH 密码；重装 Agent 会自动对账并恢复已有资源。</p><button class="primary" data-action="add-server">＋ 添加设备</button></div>
     <section class="panel"><div class="panel-head"><div class="toolbar"><input class="search" data-search placeholder="搜索名称、地区、IP 或标签" value="${esc(state.search)}"><span class="tag">${state.servers.length} 台</span></div></div>
-    <div class="table-wrap"><table><thead><tr><th>服务器</th><th>角色</th><th>地区</th><th>标签</th><th>状态</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('没有匹配项','添加服务器后可生成一次性注册命令')}</td></tr>`}</tbody></table></div></section>`;
+    <div class="table-wrap"><table><thead><tr><th>设备</th><th>用途</th><th>地区</th><th>标签</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('没有匹配设备','添加设备后生成一次性注册命令')}</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderCustomers() {
@@ -103,21 +138,34 @@ function renderCustomers() {
     const percent = item.trafficLimitBytes ? Math.min(100, Math.round(item.usedBytes / item.trafficLimitBytes * 100)) : 0;
     return `<tr><td><strong>${esc(item.name)}</strong><small>${esc(item.group || '未分组')}</small></td><td>${status(item.status)}</td>
       <td><strong>${fmtBytes(item.usedBytes)} / ${item.trafficLimitBytes ? fmtBytes(item.trafficLimitBytes) : '不限'}</strong><div class="progress"><i style="width:${percent}%"></i></div></td>
-      <td>${item.expiresAt ? fmtDate(item.expiresAt) : '不限期'}</td><td>${item.ipLimit || '不限'} IP<small>设备策略 ${item.deviceLimit || '不限'}（待独立凭据）</small></td><td>${tags(item.tags)}</td>
-      <td><div class="actions"><button data-action="toggle-customer" data-id="${esc(item.id)}">${item.status === 'active' ? '停用' : '启用'}</button><button class="danger" data-action="delete-customer" data-id="${esc(item.id)}">删除</button></div></td></tr>`;
+      <td>${item.expiresAt ? fmtDate(item.expiresAt) : '不限期'}</td><td>${item.ipLimit || '不限'} IP<small>设备策略 ${item.deviceLimit || '不限'}（独立凭据阶段启用）</small></td><td>${tags(item.tags)}</td>
+      <td><div class="actions"><button data-action="edit-customer" data-id="${esc(item.id)}">编辑</button><button data-action="reset-usage" data-id="${esc(item.id)}">流量清零</button><button data-action="toggle-customer" data-id="${esc(item.id)}">${item.status === 'active' ? '停用' : '启用'}</button><button class="danger" data-action="delete-customer" data-id="${esc(item.id)}">删除</button></div></td></tr>`;
   }).join('');
-  return `<div class="page-intro"><p>每位客户使用独立凭据与订阅。流量、到期、IP 和设备限制在这里统一管理。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
+  return `<div class="page-intro"><p>客户使用独立线路凭据。流量、到期日期、滚动 IP 上限会实际执行；设备数量需配合后续“一设备一凭据”机制。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
     <section class="panel"><div class="panel-head"><div class="toolbar"><input class="search" data-search placeholder="搜索客户、分组或标签" value="${esc(state.search)}"><span class="tag">${state.customers.length} 位</span></div></div>
-    <div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>流量</th><th>到期</th><th>限制</th><th>标签</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="7">${empty('还没有客户','先创建客户，再进行链路编排')}</td></tr>`}</tbody></table></div></section>`;
+    <div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>流量</th><th>到期</th><th>使用限制</th><th>标签</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="7">${empty('还没有客户','先创建客户，再编排线路')}</td></tr>`}</tbody></table></div></section>`;
 }
 
-function names(ids, collection) { return ids.map((key) => (collection.find((item) => item.id === key) || {}).name || '已删除').join('、'); }
+function chainActions(chain) {
+  const edit = `<button data-action="edit-chain" data-id="${esc(chain.id)}">编辑</button>`;
+  if (chain.status === 'draft') return `${edit}<button class="primary" data-action="deploy-chain" data-id="${esc(chain.id)}">部署</button><button class="danger" data-action="delete-chain" data-id="${esc(chain.id)}">删除</button>`;
+  if (chain.status === 'changes_pending') return `${edit}<button class="primary" data-action="redeploy-chain" data-id="${esc(chain.id)}">应用修改</button><button data-action="remove-chain" data-id="${esc(chain.id)}">停用</button>`;
+  if (chain.status === 'degraded') return `${edit}<button class="primary" data-action="repair-chain" data-id="${esc(chain.id)}">修复失败项</button><button data-action="redeploy-chain" data-id="${esc(chain.id)}">完整重建</button><button data-action="remove-chain" data-id="${esc(chain.id)}">停用</button>`;
+  if (['active','deploying'].includes(chain.status)) return `${edit}<button data-action="redeploy-chain" data-id="${esc(chain.id)}">重新部署</button><button data-action="remove-chain" data-id="${esc(chain.id)}">停用</button>`;
+  return edit;
+}
+
 function renderChains() {
-  const rows = state.chains.map((chain) => `<tr><td><strong>${esc(chain.name)}</strong><small>${esc(chain.relayProtocol)} → ${esc(chain.exitProtocol)}</small></td>
-    <td>${esc(names(chain.relayServerIds, state.servers))}</td><td>${esc((state.servers.find((item) => item.id === chain.exitServerId) || {}).name || '已删除')}</td>
-    <td>${esc(names(chain.customerIds, state.customers))}</td><td>${status(chain.status)}</td><td><div class="actions">${['draft','degraded'].includes(chain.status) ? `<button class="primary" data-action="deploy-chain" data-id="${esc(chain.id)}">部署</button>` : `<button data-action="remove-chain" data-id="${esc(chain.id)}">停用</button>`}<button class="danger" data-action="delete-chain" data-id="${esc(chain.id)}">删除</button></div></td></tr>`).join('');
-  return `<div class="page-intro"><p>一次选择多台中转、一台落地和多个客户。系统为每个客户生成独立凭据，并把两端配置作为同一条链路管理。</p><button class="primary" data-action="add-chain">＋ 新建链路</button></div>
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>链路</th><th>中转</th><th>落地</th><th>客户</th><th>状态</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('还没有链路','准备好服务器和客户后创建第一条链路')}</td></tr>`}</tbody></table></div></section>`;
+  const rows = state.chains.map((chain) => {
+    const direct = (chain.topology || 'forward') === 'direct';
+    const path = direct ? protocolName(chain.relayProtocol, 'relay-ingress') : `${protocolName(chain.relayProtocol, 'relay-ingress')} → ${protocolName(chain.exitProtocol, 'exit-transport')}`;
+    const exit = direct ? '本机直出' : ((state.servers.find((item) => item.id === chain.exitServerId) || {}).name || '已删除');
+    return `<tr><td><strong>${esc(chain.name)}</strong><small>${esc(topologyText[chain.topology || 'forward'])} · ${esc(path)}</small></td>
+      <td>${esc(names(chain.relayServerIds, state.servers))}<small>${esc(chain.networkMode || 'ipv4').toUpperCase()}</small></td><td>${esc(exit)}</td>
+      <td>${esc(names(chain.customerIds, state.customers))}</td><td>${status(chain.status)}${chain.lastError ? `<small>${esc(chain.lastError)}</small>` : ''}</td><td><div class="actions">${chainActions(chain)}</div></td></tr>`;
+  }).join('');
+  return `<div class="page-intro"><p>“转发线路”把多个客户端入口汇聚到一个出口；“单机直连”无需出口机，直接在任意设备创建节点。编辑运行中线路后，点击“应用修改”安全重建。</p><button class="primary" data-action="add-chain">＋ 新建线路</button></div>
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>线路</th><th>入口 / 节点设备</th><th>出口</th><th>客户</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('还没有线路','准备好设备和客户后创建第一条线路')}</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderDeployments() {
@@ -126,17 +174,23 @@ function renderDeployments() {
     const server = state.servers.find((entry) => entry.id === item.serverId);
     const customer = state.customers.find((entry) => entry.id === item.customerId);
     const chain = state.chains.find((entry) => entry.id === item.chainId);
-    return `<tr><td><strong>${esc(chain ? chain.name : '已删除链路')}</strong><small>${esc(item.role === 'relay' ? '客户入口' : '落地出口')}</small></td><td>${esc(customer ? customer.name : '已删除')}</td><td>${esc(server ? server.name : '已删除')}<small>${esc(server ? server.publicAddress : '')}:${item.port}</small></td><td>${esc(item.protocol)}</td><td>${status(item.status)}</td><td><div class="actions">${item.clientUri ? `<button data-action="copy-uri" data-value="${esc(item.clientUri)}">复制链接</button>` : ''}</div></td></tr>`;
+    return `<tr><td><strong>${esc(chain ? chain.name : '已删除线路')}</strong><small>${esc(deploymentRoleText[item.role] || item.role)}</small></td><td>${esc(customer ? customer.name : '已删除')}</td>
+      <td>${esc(server ? server.name : '已删除')}<small>${esc(server ? (server.publicAddressV6 && chain && chain.networkMode === 'ipv6' ? server.publicAddressV6 : server.publicAddress) : '')}:${item.port}</small></td>
+      <td>${esc(protocolName(item.protocol, item.role === 'exit' ? 'exit-transport' : 'relay-ingress'))}</td><td>${status(item.status)}${item.error ? `<small>${esc(item.error)}</small>` : ''}</td>
+      <td><div class="actions">${item.clientUri ? `<button data-action="copy-uri" data-value="${esc(item.clientUri)}">复制链接</button>` : ''}${chain ? `<button data-action="edit-chain" data-id="${esc(chain.id)}">编辑线路</button>` : ''}</div></td></tr>`;
   }).join('');
-  return `<div class="page-intro"><p>这里显示编排产生的实际资源。客户入口完成后可直接复制独立客户端链接。</p></div>
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>链路 / 角色</th><th>客户</th><th>服务器</th><th>协议</th><th>状态</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('暂无部署','从链路编排页面发起部署')}</td></tr>`}</tbody></table></div></section>`;
+  return `<div class="page-intro"><p>显示线路生成的实际入口、出口和单机节点。客户端链接只在入口资源部署成功后生成；编辑请从对应线路统一完成。</p></div>
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>线路 / 角色</th><th>客户</th><th>设备</th><th>协议</th><th>状态 / 错误</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('暂无部署','从“线路编排”页面发起部署')}</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderOperations() {
-  const rows = state.jobs.slice(0, 100).map((job) => `<tr><td><strong>${esc(job.action)}</strong><small>${esc(job.id)}</small></td><td>${esc((state.servers.find((item) => item.id === job.serverId) || {}).name || job.serverId)}</td><td>${status(job.status)}</td><td>${job.attempts}</td><td>${fmtDate(job.updatedAt)}</td><td><small>${esc(job.error || '')}</small></td></tr>`).join('');
-  return `<div class="grid-2"><section class="panel"><div class="panel-head"><div><h2>备份与恢复</h2><p>包含控制面数据、客户、链路和凭据</p></div></div><div class="panel-body stack"><div class="notice">备份文件包含敏感凭据，请存放在可信位置。恢复会替换当前控制面数据。</div><div class="toolbar"><button class="primary" data-action="download-backup">下载备份</button><button data-action="restore-backup">恢复备份</button></div></div></section>
-    <section class="panel"><div class="panel-head"><div><h2>版本与维护</h2><p>轻量单进程控制面</p></div></div><div class="panel-body"><div class="health-row"><div><b>NexusGate</b><span>当前版本</span></div><span class="tag">v0.1.0</span></div><div class="health-row"><div><b>自动清理</b><span>活动日志 30 天 / 任务 7 天</span></div>${status('active')}</div></div></section></div>
-    <section class="panel" style="margin-top:16px"><div class="panel-head"><div><h2>任务队列</h2><p>最近 100 个 Agent 任务</p></div></div><div class="table-wrap"><table><thead><tr><th>任务</th><th>服务器</th><th>状态</th><th>尝试</th><th>更新时间</th><th>错误</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('任务队列为空','部署或移除链路后会产生任务')}</td></tr>`}</tbody></table></div></section>`;
+  const rows = state.jobs.slice(0, 100).map((job) => `<tr><td><strong>${esc(job.action === 'apply_resource' ? '应用资源' : '移除资源')}</strong><small>${esc(job.id)}</small></td><td>${esc((state.servers.find((item) => item.id === job.serverId) || {}).name || job.serverId)}</td><td>${status(job.status)}</td><td>${job.attempts}</td><td>${fmtDate(job.updatedAt)}</td><td><small>${esc(job.error || '')}</small></td></tr>`).join('');
+  return `<section class="grid-3">
+    <article class="panel"><div class="panel-head"><div><h2>账号安全</h2><p>修改后台登录账号或密码</p></div></div><div class="panel-body"><form id="account-form" class="stack"><label>登录账号<input name="username" value="${esc(state.session.user.username)}" required></label><label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" required></label><label>新密码（不修改可留空）<input name="newPassword" type="password" minlength="10" autocomplete="new-password"></label><label>确认新密码<input name="confirmPassword" type="password" minlength="10" autocomplete="new-password"></label><button class="primary" type="submit">保存并重新登录</button></form></div></article>
+    <article class="panel"><div class="panel-head"><div><h2>备份与恢复</h2><p>浏览器 JSON 与整机迁移包</p></div></div><div class="panel-body stack"><div class="notice">备份含客户凭据，请加密保管。整机迁移推荐 SSH 运行 <b>ng backup</b>，新机安装后把压缩包放进 /root，再运行 <b>ng restore</b>。</div><div class="toolbar"><button class="primary" data-action="download-backup">下载 JSON</button><button data-action="restore-backup">恢复 JSON</button></div></div></article>
+    <article class="panel"><div class="panel-head"><div><h2>版本与证书</h2><p>轻量单进程控制面</p></div></div><div class="panel-body"><div class="health-row"><div><b>NexusGate</b><span>当前版本</span></div><span class="tag">v${esc(state.version)}</span></div><div class="health-row"><div><b>Caddy HTTPS</b><span>证书自动申请与续签</span></div>${status('active')}</div><div class="codebox">ng update\nng domain new.example.com\nng cert</div></div></article>
+  </section>
+  <section class="panel" style="margin-top:16px"><div class="panel-head"><div><h2>任务队列</h2><p>任务租约 5 分钟，超时自动重试，最多 3 次</p></div></div><div class="table-wrap"><table><thead><tr><th>任务</th><th>设备</th><th>状态</th><th>尝试</th><th>更新时间</th><th>错误</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('任务队列为空','部署或停用线路后会产生任务')}</td></tr>`}</tbody></table></div></section>`;
 }
 
 function render() {
@@ -148,29 +202,84 @@ function modal(kicker, title, body) {
   $('#modal-kicker').textContent = kicker; $('#modal-title').textContent = title; $('#modal-body').innerHTML = body; $('#modal').showModal();
 }
 
-function serverForm() {
-  modal('NEW RESOURCE', '添加服务器', `<form id="server-form" class="form-grid"><label>名称<input name="name" placeholder="新加坡中转 01" required></label><label>角色<select name="role"><option value="relay">中转</option><option value="exit">落地</option><option value="hybrid">混合</option></select></label><label>地区 / 分组<input name="region" placeholder="新加坡"></label><label>公网 IP 或域名<input name="publicAddress" placeholder="203.0.113.10" required></label><label>起始端口<input name="portRangeStart" type="number" value="20000" min="1024" max="65535"></label><label>结束端口<input name="portRangeEnd" type="number" value="50000" min="1024" max="65535"></label><label class="wide">标签（逗号分隔）<input name="labels" placeholder="CN2, 高带宽, 主力"></label><div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">保存服务器</button></div></form>`);
+function serverForm(item = null) {
+  const server = item || { role:'hybrid', portRangeStart:20000, portRangeEnd:50000, labels:[] };
+  modal(item ? 'EDIT DEVICE' : 'NEW DEVICE', item ? '编辑设备' : '添加设备', `<form id="server-form" class="form-grid"><input type="hidden" name="resourceId" value="${esc(item ? item.id : '')}">
+    <label>设备名称<input name="name" value="${esc(server.name || '')}" placeholder="新加坡入口 01" required></label><label>用途<select name="role"><option value="relay"${selected('relay',server.role)}>入口 / 转发</option><option value="exit"${selected('exit',server.role)}>出口 / 落地</option><option value="hybrid"${selected('hybrid',server.role)}>综合节点</option></select></label>
+    <label>地区 / 分组<input name="region" value="${esc(server.region || '')}" placeholder="新加坡"></label><label>公网 IPv4 / 域名<input name="publicAddress" value="${esc(server.publicAddress || '')}" placeholder="203.0.113.10" required></label>
+    <label>公网 IPv6（可选）<input name="publicAddressV6" value="${esc(server.publicAddressV6 || '')}" placeholder="2001:db8::10"></label><label>标签（逗号分隔）<input name="labels" value="${esc((server.labels || []).join(', '))}" placeholder="CN2, 高带宽, 主力"></label>
+    <label>可用端口起点<input name="portRangeStart" type="number" value="${Number(server.portRangeStart || 20000)}" min="1024" max="65535" required></label><label>可用端口终点<input name="portRangeEnd" type="number" value="${Number(server.portRangeEnd || 50000)}" min="1024" max="65535" required></label>
+    <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '添加设备'}</button></div></form>`);
 }
 
-function customerForm() {
-  modal('NEW CUSTOMER', '添加客户', `<form id="customer-form" class="form-grid"><label>客户名称<input name="name" required></label><label>分组<input name="group" placeholder="华南团队"></label><label>流量上限（GB，0 不限）<input name="trafficGb" type="number" min="0" value="0"></label><label>到期时间<input name="expiresAt" type="datetime-local"></label><label>并发 IP 上限<input name="ipLimit" type="number" min="0" value="2"></label><label>设备策略（独立凭据功能待上线）<input name="deviceLimit" type="number" min="0" value="3"></label><label class="wide">标签（逗号分隔）<input name="tags"></label><label class="wide">备注<textarea name="notes"></textarea></label><div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">创建客户</button></div></form>`);
+function localDateParts(value) {
+  if (!value) return { date:'', time:'23:59' };
+  const date = new Date(value); const pad = (number) => String(number).padStart(2, '0');
+  return { date:`${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`, time:`${pad(date.getHours())}:${pad(date.getMinutes())}` };
 }
 
-function chainForm() {
-  const relays = state.servers.filter((item) => ['relay','hybrid'].includes(item.role));
-  const exits = state.servers.filter((item) => ['exit','hybrid'].includes(item.role));
-  const ingress = state.protocols.filter((item) => item.role === 'relay-ingress');
-  const transports = state.protocols.filter((item) => item.role === 'exit-transport');
-  modal('ORCHESTRATION', '新建链路', `<form id="chain-form" class="form-grid"><label class="wide">链路名称<input name="name" placeholder="新加坡入口 → 日本落地" required></label>
-    <label class="wide">中转服务器<div class="check-grid">${relays.map((item) => `<label class="check-card"><input type="checkbox" name="relayServerIds" value="${esc(item.id)}"><span>${esc(item.name)}<small>${esc(item.region)}</small></span></label>`).join('') || '<span class="muted">没有可用中转服务器</span>'}</div></label>
-    <label>入口协议<select name="relayProtocol">${ingress.map((item) => `<option value="${esc(item.id)}">${esc(item.name)} · ${esc(item.status)}</option>`).join('')}</select></label>
-    <label>入口端口<select name="relayPortMode"><option value="random">范围内随机</option><option value="fixed">固定端口</option></select><input name="relayPort" type="number" placeholder="固定时填写" min="1024" max="65535"></label>
-    <label>落地服务器<select name="exitServerId">${exits.map((item) => `<option value="${esc(item.id)}">${esc(item.name)} · ${esc(item.region)}</option>`).join('')}</select></label>
-    <label>落地传输<select name="exitProtocol">${transports.map((item) => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('')}</select></label>
-    <label>落地端口<select name="exitPortMode"><option value="random">范围内随机</option><option value="fixed">固定端口</option></select><input name="exitPort" type="number" placeholder="固定时填写" min="1024" max="65535"></label>
-    <label>Reality SNI<input name="realityServerName" value="www.microsoft.com"></label>
-    <label class="wide">客户<div class="check-grid">${state.customers.filter((item) => item.status === 'active').map((item) => `<label class="check-card"><input type="checkbox" name="customerIds" value="${esc(item.id)}"><span>${esc(item.name)}<small>${esc(item.group || '未分组')}</small></span></label>`).join('') || '<span class="muted">没有可用客户</span>'}</div></label>
-    <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">创建链路</button></div></form>`);
+function timeOptions(current = '23:59') {
+  const values = ['00:00','06:00','12:00','18:00','23:59'];
+  if (current && !values.includes(current)) values.push(current);
+  return values.sort().map((value) => `<option value="${value}"${selected(value,current)}>${value}</option>`).join('');
+}
+
+function customerForm(item = null) {
+  const customer = item || { trafficLimitBytes:0, ipLimit:2, deviceLimit:3, tags:[] };
+  const expiry = localDateParts(customer.expiresAt);
+  modal(item ? 'EDIT CUSTOMER' : 'NEW CUSTOMER', item ? '编辑客户' : '添加客户', `<form id="customer-form" class="form-grid"><input type="hidden" name="resourceId" value="${esc(item ? item.id : '')}">
+    <label>客户名称<input name="name" value="${esc(customer.name || '')}" required></label><label>分组<input name="group" value="${esc(customer.group || '')}" placeholder="华南团队"></label>
+    <label>流量上限（GB，0 不限）<input name="trafficGb" type="number" min="0" step="0.01" value="${Number(customer.trafficLimitBytes || 0) / 1024 ** 3}"></label><label>快速到期<select data-expiry-quick><option value="">自定义 / 不限</option><option value="7">7 天后</option><option value="30">30 天后</option><option value="90">90 天后</option><option value="365">1 年后</option></select></label>
+    <label>到期日期<input name="expiryDate" type="date" value="${esc(expiry.date)}"><small>留空表示不限期，不再需要手工输入日期格式。</small></label><label>到期时间<select name="expiryTime">${timeOptions(expiry.time)}</select></label>
+    <label>滚动 IP 上限<input name="ipLimit" type="number" min="0" step="1" value="${Number(customer.ipLimit || 0)}"><small>0 表示不限，按观察窗口统计。</small></label><label>设备策略上限<input name="deviceLimit" type="number" min="0" step="1" value="${Number(customer.deviceLimit || 0)}"><small>为“一设备一凭据”预留，当前不强制。</small></label>
+    <label class="wide">标签（逗号分隔）<input name="tags" value="${esc((customer.tags || []).join(', '))}"></label><label class="wide">备注<textarea name="notes">${esc(customer.notes || '')}</textarea></label>
+    <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '创建客户'}</button></div></form>`);
+}
+
+function protocolOptions(role, current) {
+  return state.protocols.filter((item) => item.role === role).map((item) => `<option value="${esc(item.id)}"${selected(item.id,current)}${item.deployable ? '' : ' disabled'}>${esc(item.name)} · ${item.deployable ? (item.status === 'stable' ? '稳定' : '测试') : '规划中'}</option>`).join('');
+}
+
+function chainForm(item = null) {
+  const chain = item || { topology:'forward', relayProtocol:'vless-reality-vision', exitProtocol:'shadowsocks-2022-aes128', relayPortMode:'random', exitPortMode:'random', networkMode:'ipv4', realityServerName:'www.tesla.com', realityDestPort:443, relayServerIds:[], customerIds:[] };
+  const preset = state.realityPresets.find((entry) => entry.serverName === chain.realityServerName) || { id:'custom' };
+  modal(item ? 'EDIT ROUTE' : 'NEW ROUTE', item ? '编辑线路' : '新建线路', `<form id="chain-form" class="form-grid"><input type="hidden" name="resourceId" value="${esc(item ? item.id : '')}">
+    <label class="wide">线路名称<input name="name" value="${esc(chain.name || '')}" placeholder="新加坡入口 → 日本出口" required></label>
+    <label>线路类型<select name="topology" data-chain-sync><option value="forward"${selected('forward',chain.topology || 'forward')}>转发线路（入口 → 出口）</option><option value="direct"${selected('direct',chain.topology)}>单机直连（无需出口）</option></select></label>
+    <label>网络栈<select name="networkMode"><option value="ipv4"${selected('ipv4',chain.networkMode || 'ipv4')}>IPv4</option><option value="ipv6"${selected('ipv6',chain.networkMode)}>IPv6</option><option value="dual"${selected('dual',chain.networkMode)}>双栈监听</option></select><small>IPv6 模式要求设备已填写公网 IPv6。</small></label>
+    <div class="section-title">入口与客户端节点</div>
+    <label class="wide">入口 / 节点设备<div class="check-grid">${state.servers.map((server) => `<label class="check-card"><input type="checkbox" name="relayServerIds" value="${esc(server.id)}"${checked(server.id,chain.relayServerIds)}><span>${esc(server.name)}<small>${esc(roleText[server.role])} · ${esc(server.region || server.publicAddress)}</small></span></label>`).join('') || '<span class="muted">没有可用设备</span>'}</div></label>
+    <label>客户端协议<select name="relayProtocol" data-chain-sync>${protocolOptions('relay-ingress', chain.relayProtocol)}</select></label>
+    <label>入口端口<div class="inline-fields"><select name="relayPortMode" data-chain-sync><option value="random"${selected('random',chain.relayPortMode)}>范围内随机</option><option value="fixed"${selected('fixed',chain.relayPortMode)}>固定端口</option></select><input name="relayPort" type="number" value="${esc(chain.relayPort || '')}" placeholder="固定时填写" min="1024" max="65535"></div></label>
+    <label data-reality-only>Reality 目标预设<select name="realityPreset" data-reality-preset>${state.realityPresets.map((entry) => `<option value="${esc(entry.id)}" data-sni="${esc(entry.serverName)}" data-port="${entry.destPort}"${selected(entry.id,preset.id)}>${esc(entry.label)} · ${esc(entry.serverName)}</option>`).join('')}<option value="custom"${selected('custom',preset.id)}>自定义</option></select></label>
+    <label data-reality-only>Reality SNI / 目标<div class="inline-fields"><input name="realityServerName" value="${esc(chain.realityServerName || 'www.tesla.com')}" placeholder="www.tesla.com"><input name="realityDestPort" type="number" value="${Number(chain.realityDestPort || 443)}" min="1" max="65535"></div><small>仅 Reality 协议显示；目标需与 SNI 和 TLS 证书匹配。</small></label>
+    <div class="section-title" data-forward-only>出口与转发传输</div>
+    <label data-forward-only>出口 / 落地设备<select name="exitServerId">${state.servers.map((server) => `<option value="${esc(server.id)}"${selected(server.id,chain.exitServerId)}>${esc(server.name)} · ${esc(roleText[server.role])}</option>`).join('')}</select></label>
+    <label data-forward-only>入口到出口协议<select name="exitProtocol">${protocolOptions('exit-transport', chain.exitProtocol)}</select></label>
+    <label data-forward-only>出口端口<div class="inline-fields"><select name="exitPortMode" data-chain-sync><option value="random"${selected('random',chain.exitPortMode)}>范围内随机</option><option value="fixed"${selected('fixed',chain.exitPortMode)}>固定端口</option></select><input name="exitPort" type="number" value="${esc(chain.exitPort || '')}" placeholder="固定时填写" min="1024" max="65535"></div></label>
+    <div class="section-title">客户分配</div>
+    <label class="wide">客户<div class="check-grid">${state.customers.filter((customer) => customer.status === 'active' || (chain.customerIds || []).includes(customer.id)).map((customer) => `<label class="check-card"><input type="checkbox" name="customerIds" value="${esc(customer.id)}"${checked(customer.id,chain.customerIds)}><span>${esc(customer.name)}<small>${esc(customer.group || '未分组')}${customer.status !== 'active' ? ' · 已停用' : ''}</small></span></label>`).join('') || '<span class="muted">没有可用客户</span>'}</div><small>批量选择多个客户时请使用随机端口。</small></label>
+    ${item && !['draft'].includes(item.status) ? '<div class="notice warning wide">保存运行中线路只会标记“待重新部署”，不会立即中断服务。确认后再点击“应用修改”。</div>' : ''}
+    <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '创建线路'}</button></div></form>`);
+  syncChainForm();
+}
+
+function syncChainForm() {
+  const form = $('#chain-form'); if (!form) return;
+  const direct = form.elements.topology.value === 'direct';
+  $$('[data-forward-only]', form).forEach((element) => element.classList.toggle('hidden', direct));
+  form.elements.exitServerId.required = !direct; form.elements.exitProtocol.required = !direct;
+  const reality = ['vless-reality-vision','vless-reality'].includes(form.elements.relayProtocol.value);
+  $$('[data-reality-only]', form).forEach((element) => element.classList.toggle('hidden', !reality));
+  form.elements.realityServerName.required = reality;
+}
+
+function expiryIso(formData) {
+  const date = formData.get('expiryDate'); if (!date) return null;
+  const time = formData.get('expiryTime') || '23:59';
+  const result = new Date(`${date}T${time}:00`);
+  if (!Number.isFinite(result.getTime())) throw new Error('请选择有效的到期日期');
+  return result.toISOString();
 }
 
 document.addEventListener('submit', async (event) => {
@@ -178,25 +287,34 @@ document.addEventListener('submit', async (event) => {
   try {
     if (form.id === 'login-form') {
       $('#login-error').textContent = '';
-      state.session = await api('/api/auth/login', { method:'POST', body: JSON.stringify({ username:data.get('username'), password:data.get('password') }) });
+      state.session = await api('/api/auth/login', { method:'POST', body:JSON.stringify({ username:data.get('username'), password:data.get('password') }) });
       showApp(); setPage('overview'); return;
     }
     if (form.id === 'server-form') {
-      await api('/api/servers', { method:'POST', body: JSON.stringify({ name:data.get('name'), role:data.get('role'), region:data.get('region'), publicAddress:data.get('publicAddress'), portRangeStart:Number(data.get('portRangeStart')), portRangeEnd:Number(data.get('portRangeEnd')), labels:data.get('labels').split(',').map((x) => x.trim()).filter(Boolean) }) });
-      $('#modal').close(); toast('服务器已添加'); await load('servers');
-    }
-    if (form.id === 'customer-form') {
-      await api('/api/customers', { method:'POST', body: JSON.stringify({ name:data.get('name'), group:data.get('group'), trafficLimitBytes:Number(data.get('trafficGb') || 0) * 1024 ** 3, expiresAt:data.get('expiresAt') || null, ipLimit:Number(data.get('ipLimit') || 0), deviceLimit:Number(data.get('deviceLimit') || 0), tags:data.get('tags').split(',').map((x) => x.trim()).filter(Boolean), notes:data.get('notes') }) });
-      $('#modal').close(); toast('客户已创建'); await load('customers');
-    }
-    if (form.id === 'chain-form') {
-      const payload = { name:data.get('name'), relayServerIds:data.getAll('relayServerIds'), exitServerId:data.get('exitServerId'), customerIds:data.getAll('customerIds'), relayProtocol:data.get('relayProtocol'), exitProtocol:data.get('exitProtocol'), relayPortMode:data.get('relayPortMode'), relayPort:data.get('relayPort') || null, exitPortMode:data.get('exitPortMode'), exitPort:data.get('exitPort') || null, realityServerName:data.get('realityServerName') };
-      await api('/api/chains', { method:'POST', body:JSON.stringify(payload) }); $('#modal').close(); toast('链路草稿已创建'); await load('chains');
+      const resourceId = data.get('resourceId');
+      const payload = { name:data.get('name'), role:data.get('role'), region:data.get('region'), publicAddress:data.get('publicAddress'), publicAddressV6:data.get('publicAddressV6'), portRangeStart:Number(data.get('portRangeStart')), portRangeEnd:Number(data.get('portRangeEnd')), labels:splitList(data.get('labels')) };
+      await api(resourceId ? `/api/servers/${resourceId}` : '/api/servers', { method:resourceId ? 'PATCH' : 'POST', body:JSON.stringify(payload) });
+      $('#modal').close(); toast(resourceId ? '设备信息已更新' : '设备已添加'); await load('servers');
+    } else if (form.id === 'customer-form') {
+      const resourceId = data.get('resourceId');
+      const payload = { name:data.get('name'), group:data.get('group'), trafficLimitBytes:Number(data.get('trafficGb') || 0) * 1024 ** 3, expiresAt:expiryIso(data), ipLimit:Number(data.get('ipLimit') || 0), deviceLimit:Number(data.get('deviceLimit') || 0), tags:splitList(data.get('tags')), notes:data.get('notes') };
+      await api(resourceId ? `/api/customers/${resourceId}` : '/api/customers', { method:resourceId ? 'PATCH' : 'POST', body:JSON.stringify(payload) });
+      $('#modal').close(); toast(resourceId ? '客户信息已更新' : '客户已创建'); await load('customers');
+    } else if (form.id === 'chain-form') {
+      const resourceId = data.get('resourceId');
+      const payload = { name:data.get('name'), topology:data.get('topology'), networkMode:data.get('networkMode'), relayServerIds:data.getAll('relayServerIds'), exitServerId:data.get('exitServerId') || null, customerIds:data.getAll('customerIds'), relayProtocol:data.get('relayProtocol'), exitProtocol:data.get('exitProtocol') || null, relayPortMode:data.get('relayPortMode'), relayPort:data.get('relayPort') || null, exitPortMode:data.get('exitPortMode') || null, exitPort:data.get('exitPort') || null, realityServerName:data.get('realityServerName'), realityDestPort:Number(data.get('realityDestPort') || 443) };
+      const result = await api(resourceId ? `/api/chains/${resourceId}` : '/api/chains', { method:resourceId ? 'PATCH' : 'POST', body:JSON.stringify(payload) });
+      $('#modal').close(); toast(result.requiresRedeploy ? '修改已保存，请点击“应用修改”' : (resourceId ? '线路已更新' : '线路草稿已创建')); await load('chains');
+    } else if (form.id === 'account-form') {
+      if (data.get('newPassword') !== data.get('confirmPassword')) throw new Error('两次输入的新密码不一致');
+      await api('/api/account', { method:'PATCH', body:JSON.stringify({ username:data.get('username'), currentPassword:data.get('currentPassword'), newPassword:data.get('newPassword') }) });
+      toast('账号已更新，请重新登录'); $('#login-form [name="username"]').value = data.get('username'); showLogin();
     }
   } catch (error) { if (form.id === 'login-form') $('#login-error').textContent = error.message; else toast(error.message, true); }
 });
 
 document.addEventListener('click', async (event) => {
+  const theme = event.target.closest('[data-theme-toggle]'); if (theme) { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); return; }
   const nav = event.target.closest('[data-page]'); if (nav) { setPage(nav.dataset.page); return; }
   const jump = event.target.closest('[data-page-jump]'); if (jump) { setPage(jump.dataset.pageJump); return; }
   if (event.target.closest('[data-close]')) { $('#modal').close(); return; }
@@ -204,43 +322,71 @@ document.addEventListener('click', async (event) => {
   const action = button.dataset.action; const itemId = button.dataset.id;
   try {
     if (action === 'add-server') serverForm();
-    if (action === 'add-customer') customerForm();
-    if (action === 'add-chain') chainForm();
-    if (action === 'enroll-server') {
+    else if (action === 'edit-server') serverForm(state.servers.find((item) => item.id === itemId));
+    else if (action === 'add-customer') customerForm();
+    else if (action === 'edit-customer') customerForm(state.customers.find((item) => item.id === itemId));
+    else if (action === 'add-chain') chainForm();
+    else if (action === 'edit-chain') {
+      if (!state.protocols.length) { const result = await api('/api/protocols'); state.protocols = result.profiles; state.realityPresets = result.realityPresets || []; }
+      chainForm(state.chains.find((item) => item.id === itemId));
+    } else if (action === 'enroll-server') {
       const result = await api(`/api/servers/${itemId}/enrollment-token`, { method:'POST', body:'{}' });
       const command = `curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/agent-install.sh | bash -s -- --server ${location.origin} --token ${result.token}`;
-      modal('ONE-TIME ENROLLMENT', 'Agent 注册命令', `<div class="stack"><div class="notice">令牌 30 分钟内有效且只能使用一次。在目标 VPS 以 root 执行：</div><div class="codebox">${esc(command)}</div><button class="primary" data-action="copy-uri" data-value="${esc(command)}">复制命令</button></div>`);
-    }
-    if (action === 'copy-uri') { await navigator.clipboard.writeText(button.dataset.value); toast('已复制'); }
-    if (action === 'delete-server' && confirm('确认删除这台服务器？')) { await api(`/api/servers/${itemId}`, { method:'DELETE' }); toast('服务器已删除'); await load(); }
-    if (action === 'delete-customer' && confirm('确认删除这个客户？')) { await api(`/api/customers/${itemId}`, { method:'DELETE' }); toast('客户已删除'); await load(); }
-    if (action === 'toggle-customer') {
+      modal('ONE-TIME ENROLLMENT', 'Agent 注册 / 重装命令', `<div class="stack"><div class="notice">令牌 30 分钟内有效且只能使用一次。重装会保留本机资源文件，并在 Agent 重启后自动与控制面对账。</div><div class="codebox">${esc(command)}</div><button class="primary" data-action="copy-uri" data-value="${esc(command)}">复制命令</button></div>`);
+    } else if (action === 'copy-uri') { await navigator.clipboard.writeText(button.dataset.value); toast('已复制到剪贴板'); }
+    else if (action === 'delete-server' && confirm('确认删除这台设备？存在活动部署时系统会阻止删除。')) { await api(`/api/servers/${itemId}`, { method:'DELETE' }); toast('设备已删除'); await load(); }
+    else if (action === 'delete-customer' && confirm('确认删除这个客户？存在活动部署时系统会阻止删除。')) { await api(`/api/customers/${itemId}`, { method:'DELETE' }); toast('客户已删除'); await load(); }
+    else if (action === 'reset-usage' && confirm('确认把该客户已用流量清零？')) { await api(`/api/customers/${itemId}/reset-usage`, { method:'POST', body:'{}' }); toast('客户流量已清零'); await load(); }
+    else if (action === 'toggle-customer') {
       const item = state.customers.find((entry) => entry.id === itemId);
       await api(`/api/customers/${itemId}`, { method:'PATCH', body:JSON.stringify({ status:item.status === 'active' ? 'suspended' : 'active' }) }); toast('客户状态已更新'); await load();
-    }
-    if (action === 'deploy-chain' && confirm('现在向所选服务器下发这条链路？')) { await api(`/api/chains/${itemId}/deploy`, { method:'POST', body:'{}' }); toast('部署任务已进入队列'); await load(); }
-    if (action === 'remove-chain' && confirm('停用会从相关服务器移除配置，确认继续？')) { await api(`/api/chains/${itemId}/remove`, { method:'POST', body:'{}' }); toast('移除任务已进入队列'); await load(); }
-    if (action === 'delete-chain' && confirm('确认删除链路草稿？')) { await api(`/api/chains/${itemId}`, { method:'DELETE' }); toast('链路已删除'); await load(); }
-    if (action === 'download-backup') { location.href = '/api/backup'; }
-    if (action === 'restore-backup') {
+    } else if (action === 'deploy-chain' && confirm('现在向所选设备下发这条线路？')) { await api(`/api/chains/${itemId}/deploy`, { method:'POST', body:'{}' }); toast('部署任务已进入队列'); await load(); }
+    else if (action === 'redeploy-chain' && confirm('重新部署会先移除旧资源，再自动创建新资源。确认继续？')) { await api(`/api/chains/${itemId}/redeploy`, { method:'POST', body:'{}' }); toast('线路已进入安全重建流程'); await load(); }
+    else if (action === 'repair-chain' && confirm('仅重试当前失败的部署项？')) { await api(`/api/chains/${itemId}/repair`, { method:'POST', body:'{}' }); toast('修复任务已进入队列'); await load(); }
+    else if (action === 'remove-chain' && confirm('停用会从相关设备移除配置，确认继续？')) { await api(`/api/chains/${itemId}/remove`, { method:'POST', body:'{}' }); toast('移除任务已进入队列'); await load(); }
+    else if (action === 'delete-chain' && confirm('确认删除线路草稿？')) { await api(`/api/chains/${itemId}`, { method:'DELETE' }); toast('线路已删除'); await load(); }
+    else if (action === 'download-backup') location.href = '/api/backup';
+    else if (action === 'restore-backup') {
       const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json'; input.onchange = async () => {
-        if (!input.files[0] || !confirm('恢复会覆盖当前全部控制面数据，确认继续？')) return;
-        const data = JSON.parse(await input.files[0].text()); await api('/api/restore', { method:'POST', body:JSON.stringify({ confirm:'RESTORE', data }) }); location.reload();
+        try {
+          if (!input.files[0] || !confirm('恢复会覆盖当前全部控制面数据，确认继续？')) return;
+          const backupData = JSON.parse(await input.files[0].text()); await api('/api/restore', { method:'POST', body:JSON.stringify({ confirm:'RESTORE', data:backupData }) }); location.reload();
+        } catch (error) { toast(error.message, true); }
       }; input.click();
     }
   } catch (error) { toast(error.message, true); }
+});
+
+document.addEventListener('change', (event) => {
+  if (event.target.matches('[data-chain-sync]')) syncChainForm();
+  if (event.target.matches('[data-reality-preset]')) {
+    const option = event.target.selectedOptions[0]; const form = event.target.form;
+    if (option && option.value !== 'custom') { form.elements.realityServerName.value = option.dataset.sni; form.elements.realityDestPort.value = option.dataset.port; }
+  }
+  if (event.target.matches('[data-expiry-quick]') && event.target.value) {
+    const target = new Date(); target.setDate(target.getDate() + Number(event.target.value));
+    const pad = (number) => String(number).padStart(2, '0');
+    event.target.form.elements.expiryDate.value = `${target.getFullYear()}-${pad(target.getMonth()+1)}-${pad(target.getDate())}`;
+    event.target.form.elements.expiryTime.value = '23:59';
+  }
 });
 
 document.addEventListener('input', (event) => {
   if (event.target.matches('[data-search]')) { state.search = event.target.value; render(); const next = $('[data-search]'); next.focus(); next.setSelectionRange(next.value.length,next.value.length); }
 });
 
+function closeSidebar() { $('#app').classList.remove('sidebar-open'); }
+$('#menu-toggle').addEventListener('click', () => $('#app').classList.add('sidebar-open'));
+$('#sidebar-scrim').addEventListener('click', closeSidebar);
 $('#refresh').addEventListener('click', () => load());
 $('#logout').addEventListener('click', async () => { try { await api('/api/auth/logout', { method:'POST', body:'{}' }); } finally { showLogin(); } });
+
 (async function boot() {
+  setTheme(localStorage.getItem('nexusgate-theme') || 'light');
   try {
     const session = await api('/api/session');
     if (!session.authenticated) return showLogin();
     state.session = session; showApp(); await load('overview');
   } catch { showLogin(); }
+  setInterval(() => { if (state.session && document.visibilityState === 'visible' && !$('#modal').open) load(); }, 45000);
 })();

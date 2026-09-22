@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+description="NexusGate node agent"
+command="/opt/nexusgate-agent/run.sh"
+command_background="yes"
+pidfile="/run/nexusgate-agent.pid"
+output_log="/var/log/nexusgate/agent.log"
+error_log="/var/log/nexusgate/agent-error.log"
+
+depend() {
+  need net
+  use nexusgate-xray
+}
+
+start_pre() {
+  checkpath --directory --mode 0750 /var/log/nexusgate
+}

@@ -19,7 +19,8 @@ ProtectHome=true
 ReadWritePaths=/var/lib/nexusgate
 CapabilityBoundingSet=
 LockPersonality=true
-# Do not enable MemoryDenyWriteExecute here. Node/V8 needs executable\n# anonymous memory for its JIT and otherwise aborts before binding NG_PORT.
+# Do not enable MemoryDenyWriteExecute here. Node/V8 needs executable
+# anonymous memory for its JIT and otherwise aborts before binding NG_PORT.
 
 [Install]
 WantedBy=multi-user.target

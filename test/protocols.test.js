@@ -3,8 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  newCredentialSet, buildExitResource, buildRelayResource, buildClientUri,
-  validateProtocolPair
+  newCredentialSet, buildExitResource, buildRelayResource, buildDirectResource, buildClientUri,
+  validateEntryProtocol, validateProtocolPair
 } = require('../lib/protocols');
 
 const customer = { id: 'cus_test', name: '测试客户' };
@@ -27,4 +27,19 @@ test('builds a VLESS Reality to Shadowsocks 2022 chain', () => {
 
 test('rejects unsupported protocol pairs', () => {
   assert.throws(() => validateProtocolPair('hysteria2', 'shadowsocks-2022-aes128'), /Unsupported relay ingress/);
+});
+
+test('builds direct Shadowsocks, SOCKS5 and IPv6 client resources', () => {
+  const ssCredentials = newCredentialSet('shadowsocks-2022-aes256', null);
+  const direct = buildDirectResource({ resourceId: 'res_direct_123', tagPrefix: 'direct-test', port: 24001, protocol: 'shadowsocks-2022-aes256', credentials: ssCredentials, customer, networkMode: 'ipv6' });
+  assert.equal(direct.meta.kind, 'direct');
+  assert.equal(direct.inbounds[0].listen, '::');
+  assert.equal(direct.inbounds[0].settings.method, '2022-blake3-aes-256-gcm');
+  const ipv6Relay = { ...relay, publicAddressV6: '2001:db8::10' };
+  const uri = buildClientUri({ protocol: 'shadowsocks-2022-aes256', relayServer: ipv6Relay, relayPort: 24001, credentials: ssCredentials, name: 'IPv6 节点', networkMode: 'ipv6' });
+  assert.match(uri, /@\[2001:db8::10\]:24001/);
+  const socksCredentials = newCredentialSet('socks5-auth', null);
+  const socks = buildDirectResource({ resourceId: 'res_direct_456', tagPrefix: 'socks-test', port: 24002, protocol: 'socks5-auth', credentials: socksCredentials, customer, networkMode: 'ipv4' });
+  assert.equal(socks.inbounds[0].protocol, 'socks');
+  assert.doesNotThrow(() => validateEntryProtocol('socks5-auth'));
 });

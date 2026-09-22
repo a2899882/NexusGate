@@ -1,55 +1,69 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#0b1220">
-  <title>NexusGate · Control Center</title>
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f7fb">
+  <title>NexusGate · 枢门控制台</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div id="login" class="login-shell hidden">
-    <section class="login-card">
-      <div class="brand-mark">N</div>
-      <p class="eyebrow">CONTROL CENTER</p>
-      <h1>欢迎回来</h1>
-      <p class="muted">登录统一资源管理中心</p>
-      <form id="login-form" class="stack">
-        <label>账号<input name="username" autocomplete="username" value="admin" required></label>
-        <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
-        <button class="primary full" type="submit">安全登录</button>
-      </form>
-      <p id="login-error" class="form-error"></p>
+    <section class="login-main">
+      <button class="theme-button login-theme" type="button" data-theme-toggle aria-label="切换主题">◐</button>
+      <div class="login-card">
+        <div class="brand login-brand"><span class="brand-mark">N</span><span><b>NexusGate</b><small>枢门控制台</small></span></div>
+        <div class="login-copy">
+          <p class="eyebrow">WELCOME BACK</p>
+          <h1>欢迎回来</h1>
+          <p class="muted">登录统一设备与线路管理中心</p>
+        </div>
+        <form id="login-form" class="stack login-form">
+          <label>登录账号<input name="username" autocomplete="username" value="admin" required></label>
+          <label>登录密码<input name="password" type="password" autocomplete="current-password" required></label>
+          <button class="primary full large" type="submit">登录控制台</button>
+        </form>
+        <p id="login-error" class="form-error"></p>
+        <p class="login-footnote">仅在受信任设备登录 · 全程 HTTPS</p>
+      </div>
     </section>
+    <aside class="login-visual">
+      <div class="orb orb-one"></div><div class="orb orb-two"></div>
+      <div class="visual-copy"><span class="visual-badge">统一 · 轻量 · 可恢复</span><h2>一处管理全部入口、出口与客户线路</h2><p>面向几十到上百台服务器的集中编排，状态、额度、部署与订阅一目了然。</p></div>
+      <div class="visual-card"><span class="live-dot"></span><div><b>控制平面在线</b><small>Agent 主动连接，无需集中保存 SSH 密码</small></div></div>
+    </aside>
   </div>
 
   <div id="app" class="app-shell hidden">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark small">N</span><span><b>NexusGate</b><small>枢门控制台</small></span></div>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand sidebar-brand"><span class="brand-mark small">N</span><span><b>NexusGate</b><small>枢门控制台</small></span></div>
+      <p class="nav-caption">工作台</p>
       <nav id="nav">
-        <button data-page="overview" class="active"><span>◫</span>总览</button>
-        <button data-page="servers"><span>⌁</span>服务器</button>
-        <button data-page="customers"><span>◎</span>客户</button>
-        <button data-page="chains"><span>⇄</span>链路编排</button>
-        <button data-page="deployments"><span>◇</span>部署与订阅</button>
-        <button data-page="operations"><span>⚙</span>运维中心</button>
+        <button data-page="overview" class="active"><span class="nav-icon">▦</span><span>运行总览</span></button>
+        <button data-page="servers"><span class="nav-icon">◫</span><span>设备管理</span></button>
+        <button data-page="customers"><span class="nav-icon">◎</span><span>客户额度</span></button>
+        <button data-page="chains"><span class="nav-icon">⇄</span><span>线路编排</span></button>
+        <button data-page="deployments"><span class="nav-icon">◇</span><span>节点与订阅</span></button>
+        <button data-page="operations"><span class="nav-icon">⚙</span><span>系统运维</span></button>
       </nav>
-      <div class="sidebar-foot"><span class="pulse"></span><span id="connection-label">控制面正常</span><button id="logout" title="退出">↗</button></div>
+      <div class="sidebar-foot"><div><span class="live-dot"></span><span id="connection-label">控制面正常</span></div><button id="logout" class="icon-button" title="退出登录">↗</button></div>
     </aside>
 
-    <main>
+    <main class="main-shell">
       <header class="topbar">
-        <div><p id="breadcrumb" class="eyebrow">NEXUSGATE / 总览</p><h1 id="page-title">运行总览</h1></div>
-        <div class="top-actions"><button id="refresh" class="ghost">刷新</button><span id="user-chip" class="chip"></span></div>
+        <button id="menu-toggle" class="icon-button mobile-only" type="button" aria-label="展开菜单">☰</button>
+        <div class="title-block"><p id="breadcrumb" class="eyebrow">NEXUSGATE / 运行总览</p><h1 id="page-title">运行总览</h1></div>
+        <div class="top-actions"><button id="refresh" class="ghost" type="button">刷新数据</button><button class="theme-button" type="button" data-theme-toggle aria-label="切换主题">◐</button><span id="user-chip" class="user-chip"></span></div>
       </header>
       <div id="content" class="content"></div>
     </main>
+    <button id="sidebar-scrim" class="sidebar-scrim" type="button" aria-label="关闭菜单"></button>
   </div>
 
   <dialog id="modal">
     <section class="dialog-shell">
-      <header><div><p id="modal-kicker" class="eyebrow"></p><h2 id="modal-title"></h2></div><button type="button" data-close class="icon-btn" aria-label="关闭">×</button></header>
+      <header><div><p id="modal-kicker" class="eyebrow"></p><h2 id="modal-title"></h2></div><button type="button" data-close class="icon-button" aria-label="关闭">×</button></header>
       <div id="modal-body"></div>
     </section>
   </dialog>

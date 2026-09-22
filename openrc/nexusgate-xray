@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+description="NexusGate managed Xray core"
+command="/usr/local/bin/xray"
+command_args="run -config /etc/nexusgate/xray/config.json"
+command_background="yes"
+pidfile="/run/nexusgate-xray.pid"
+output_log="/var/log/nexusgate/xray-service.log"
+error_log="/var/log/nexusgate/xray-service-error.log"
+
+depend() {
+  need net
+}
+
+start_pre() {
+  checkpath --directory --mode 0750 /var/log/nexusgate
+}
