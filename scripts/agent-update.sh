@@ -43,10 +43,12 @@ case "${1:-}" in
 esac
 EOF
 chmod 0755 /usr/local/sbin/ng-agent
-if [[ -x /usr/local/bin/nexusgate-sing-box || "${NG_INSTALL_ANYTLS:-0}" == 1 ]]; then
+if [[ "${NG_INSTALL_ANYTLS:-0}" == 1 ]]; then
   if ! NG_REPO="$REPO" NG_BRANCH="$BRANCH" ng-agent-singbox install; then
-    info 'sing-box 检查/构建未完成；现有 Xray 节点正常。运行 ng-agent engine install 重试。'
+    info 'sing-box 构建未完成；现有 Xray 节点正常。修复后运行 ng-agent engine install 重试。'
   fi
+elif [[ -x /usr/local/bin/nexusgate-sing-box && ! -x /usr/local/bin/nexusgate-sing-box-stats ]]; then
+  info '发现未完成的 sing-box 安装；更新 Agent 不会再次编译，请在需要 AnyTLS 的入口机运行 ng-agent engine install。'
 fi
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/systemd/nexusgate-agent.service" -o /etc/systemd/system/nexusgate-agent.service

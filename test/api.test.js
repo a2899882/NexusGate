@@ -262,7 +262,13 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.equal(oldAgent.status, 409);
   assert.match((await oldAgent.json()).message, /入口证书未由 Agent 确认/);
   await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
-    body:JSON.stringify({ version:'0.6.2', engine:{ status:'ready', singBoxInstalled:true, certificates:['entry.example.com'] } }) });
+    body:JSON.stringify({ version:'0.6.4', engine:{ status:'ready', singBoxInstalled:false, certificates:['entry.example.com'] } }) });
+  const missingEngine = await fetch(`${base}/api/chains/${anyChain.id}/deploy`, { method:'POST',
+    headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:'{}' });
+  assert.equal(missingEngine.status, 409);
+  assert.match((await missingEngine.json()).message, /ng-agent engine install/);
+  await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
+    body:JSON.stringify({ version:'0.6.4', engine:{ status:'ready', singBoxInstalled:true, certificates:['entry.example.com'] } }) });
   const anyDeploy = (await request(`/api/chains/${anyChain.id}/deploy`, 'POST', {})).deployments;
   const anyExitJob = await completeNext(agentKeys[exit.id]);
   assert.equal(anyExitJob.payload.resource.inbounds[0].protocol, 'vless');

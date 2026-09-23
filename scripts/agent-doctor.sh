@@ -21,7 +21,9 @@ else
   rc-service nexusgate-sing-box status || true
 fi
 printf '\nsing-box 构建与配置：\n'
-if [[ -x /usr/local/bin/nexusgate-sing-box ]]; then
+if [[ -x /usr/local/bin/nexusgate-sing-box && ! -x /usr/local/bin/nexusgate-sing-box-stats ]]; then
+  printf 'sing-box 主程序存在但统计组件缺失；安装不完整，运行 ng-agent engine install 重试。\n'
+elif [[ -x /usr/local/bin/nexusgate-sing-box ]]; then
   /usr/local/bin/nexusgate-sing-box version | head -n 4
   if [[ -f /etc/nexusgate/sing-box/config.json ]]; then
     /usr/local/bin/nexusgate-sing-box check -c /etc/nexusgate/sing-box/config.json 2>&1 | tail -n 12

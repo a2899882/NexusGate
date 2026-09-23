@@ -2,9 +2,11 @@
 
 面向多入口机、多出口机和多客户场景的轻量集中编排面板。一个控制面统一管理设备、客户额度、转发线路、单机节点、部署任务和客户端链接，不再逐台打开不同面板维护。
 
-> 当前版本：`v0.6.3`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
+> 当前版本：`v0.6.4`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
 
-**升级到 AnyTLS：** 面板机运行 `ng update`，入口设备运行 `ng-agent update && ng-agent engine install && ng-agent cert`。sing-box 仅在 AnyTLS 入口安装，普通入口和出口不构建 Go 引擎；已有 sing-box 的 Agent 更新仍会检查它。执行 `ng-agent doctor` 确认引擎和证书已就绪，然后部署 AnyTLS 线路并开放入口 TCP 端口。AnyTLS → VLESS TCP 可以部署，但第二段未加密；跨公网推荐选择 SS2022 出口传输。
+**升级到 AnyTLS：** 面板机运行 `ng update`，入口设备运行 `ng-agent update && ng-agent engine install && ng-agent cert`。sing-box 仅在 AnyTLS 入口安装，普通入口和出口不构建 Go 引擎；Agent 更新不会重复编译 sing-box。执行 `ng-agent doctor` 确认引擎和证书已就绪，然后部署 AnyTLS 线路并开放入口 TCP 端口。AnyTLS → VLESS TCP 可以部署，但第二段未加密；跨公网推荐选择 SS2022 出口传输。
+
+若 v0.6.3 曾在 `go mod tidy` 阶段报 `nexusgate/statsquery/gomod/... should not have @version`，升级到 v0.6.4 后在该入口机运行 `ng-agent engine install` 即可重试；证书已验证时不用重新申请，已有 Xray 线路也无需重建。安装器现在把 Go 缓存与临时工具链放在统计组件模块目录外，并在 CI 中直接运行该安装器。
 
 **从 v0.5.2 续额恢复：** 面板机运行 `ng update`。以后额度用尽而自动暂停时，调高上限或流量清零会自动排队恢复原资源，入口和出口都确认后订阅才重新返回节点；已导入客户端无需更换链接。升级前已经显示“运行中”但线路是“草稿”的历史状态无法可靠区分手动停用，在“转发与节点”点击该线路的“恢复原节点”一次；若原端口已被占用，会提示改用“全新部署”。本次是控制面更新，入口 Agent 已为 v0.5.2 时无需重装。Reality 私钥仍需保存在原 Agent 上；如果机器已重装并丢失密钥，恢复后的节点公钥会变化，应刷新订阅。
 

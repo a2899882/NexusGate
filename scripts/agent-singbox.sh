@@ -17,8 +17,11 @@ fi
 build_dir="$(mktemp -d /tmp/nexusgate-singbox.XXXXXX)"
 trap 'rm -rf -- "$build_dir"' EXIT
 # Go's module and build caches can occupy hundreds of MB indefinitely on a
-# 1 GB relay. Keep this one-time build in the temporary directory instead.
+# 1 GB relay. Keep them temporary, but OUTSIDE the stats helper's module root:
+# `go mod tidy` recursively scans that root and must not scan caches/toolchains.
 export GOMODCACHE="$build_dir/gomod" GOCACHE="$build_dir/gocache"
+stats_source_dir="$build_dir/stats-source"
+install -d -m 0700 "$stats_source_dir"
 go_version="$(go version 2>/dev/null || true)"
 go_major=0 go_minor=0
 if [[ "$go_version" =~ go([0-9]+)\.([0-9]+) ]]; then
@@ -44,8 +47,12 @@ GOBIN="$build_dir" GOTOOLCHAIN=auto GOMAXPROCS=1 go install -trimpath -ldflags='
 
 repo="${NG_REPO:-a2899882/NexusGate}"
 branch="${NG_BRANCH:-main}"
-curl -fL --retry 3 "https://raw.githubusercontent.com/${repo}/${branch}/agent/stats-query.go" -o "$build_dir/stats-query.go"
-( cd "$build_dir"
+if [[ -n "${NG_STATS_SOURCE:-}" ]]; then
+  install -m 0600 "$NG_STATS_SOURCE" "$stats_source_dir/stats-query.go"
+else
+  curl -fL --retry 3 "https://raw.githubusercontent.com/${repo}/${branch}/agent/stats-query.go" -o "$stats_source_dir/stats-query.go"
+fi
+( cd "$stats_source_dir"
   GOTOOLCHAIN=auto go mod init nexusgate/statsquery
   GOTOOLCHAIN=auto go get "github.com/sagernet/sing-box@${version}"
   GOTOOLCHAIN=auto GOMAXPROCS=1 go mod tidy

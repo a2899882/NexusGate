@@ -32,19 +32,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.1'
-      - name: Build sing-box with statistics API
+      - name: Install through the real lightweight Agent engine script
         run: |
-          mkdir -p "$RUNNER_TEMP/bin"
-          GOBIN="$RUNNER_TEMP/bin" GOMAXPROCS=2 go install -p 2 -tags with_v2ray_api github.com/sagernet/sing-box/cmd/sing-box@v1.12.23
-      - name: Build sing-box statistics client
-        run: |
-          mkdir -p "$RUNNER_TEMP/stats-helper"
-          cp agent/stats-query.go "$RUNNER_TEMP/stats-helper/stats-query.go"
-          cd "$RUNNER_TEMP/stats-helper"
-          go mod init nexusgate/statsquery
-          go get github.com/sagernet/sing-box@v1.12.23
-          GOMAXPROCS=2 go mod tidy
-          GOMAXPROCS=2 go build -p 2 -o "$RUNNER_TEMP/bin/sing-box-stats" stats-query.go
+          sudo env PATH="$PATH" NG_STATS_SOURCE="$GITHUB_WORKSPACE/agent/stats-query.go" bash scripts/agent-singbox.sh install
       - name: AnyTLS handshake and two-way traffic counters
-        run: |
-          NG_SINGBOX_BIN="$RUNNER_TEMP/bin/sing-box" NG_SINGBOX_STATS_BIN="$RUNNER_TEMP/bin/sing-box-stats" bash scripts/anytls-smoke.sh
+        run: bash scripts/anytls-smoke.sh
