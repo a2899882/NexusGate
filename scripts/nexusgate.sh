@@ -97,20 +97,22 @@ certificate_status() {
   journalctl -u caddy -n 30 --no-pager
 }
 
-change_password() {
+change_account() {
   need_root
-  local username="${1:-admin}" first second
+  local current="${1:-}" next='' first='' second=''
   if [[ -r /dev/tty ]]; then
-    read -r -s -p '新密码（至少 10 位）：' first </dev/tty; printf '\n'
-    read -r -s -p '再次输入新密码：' second </dev/tty; printf '\n'
+    read -r -p '新管理员账号（留空则保持原账号）：' next </dev/tty
+    read -r -s -p '新密码（至少 10 位，留空则保持原密码）：' first </dev/tty; printf '\n'
+    if [[ -n "$first" ]]; then read -r -s -p '再次输入新密码：' second </dev/tty; printf '\n'; fi
   else
-    die "修改密码需要交互终端"
+    die "修改管理员账号需要交互终端"
   fi
   [[ "$first" == "$second" ]] || die "两次输入不一致"
-  [[ ${#first} -ge 10 ]] || die "密码至少需要 10 个字符"
+  [[ -n "$next" || -n "$first" ]] || die "账号与密码都没有更改"
+  [[ -z "$first" || ${#first} -ge 10 ]] || die "密码至少需要 10 个字符"
   systemctl stop nexusgate
   set +e
-  NG_DATA_FILE=/var/lib/nexusgate/nexusgate.json NG_NEW_PASSWORD="$first" node /opt/nexusgate/scripts/reset-password.js "$username"
+  NG_DATA_FILE=/var/lib/nexusgate/nexusgate.json NG_NEW_USERNAME="$next" NG_NEW_PASSWORD="$first" node /opt/nexusgate/scripts/reset-password.js "$current"
   local result=$?
   unset first second
   set -e
@@ -120,8 +122,8 @@ change_password() {
     sed -i '/^NG_ADMIN_PASSWORD=/d' /etc/nexusgate.env
   fi
   systemctl start nexusgate
-  [[ $result -eq 0 ]] || die "密码更新失败"
-  info "密码已更新，现有登录会话将在服务重启后失效"
+  [[ $result -eq 0 ]] || die "管理员账号更新失败"
+  info "管理员账号已更新，现有登录会话将在服务重启后失效"
 }
 
 uninstall_panel() {
@@ -143,7 +145,7 @@ uninstall_panel() {
 
 menu() {
   printf '\nNexusGate 管理菜单\n'
-  printf '1. 一键升级\n2. 更换域名\n3. 检查证书\n4. 生成迁移备份\n5. 恢复迁移备份\n6. 修改管理员密码\n7. 查看状态\n8. 重启服务\n9. 查看日志\n10. 卸载面板\n0. 退出\n'
+  printf '1. 一键升级\n2. 更换域名\n3. 检查证书\n4. 生成迁移备份\n5. 恢复迁移备份\n6. 修改管理员账号 / 密码\n7. 查看状态\n8. 重启服务\n9. 查看日志\n10. 卸载面板\n0. 退出\n'
   local choice
   read -r -p '请选择：' choice </dev/tty
   case "$choice" in
@@ -152,7 +154,7 @@ menu() {
     3) certificate_status ;;
     4) backup ;;
     5) restore ;;
-    6) change_password ;;
+    6) change_account ;;
     7) systemctl status nexusgate --no-pager ;;
     8) need_root; systemctl restart nexusgate caddy; info '已重启' ;;
     9) journalctl -u nexusgate -n 120 --no-pager ;;
@@ -171,8 +173,8 @@ case "${1:-menu}" in
   update) update_panel ;;
   domain) change_domain "${2:-}" ;;
   cert) certificate_status ;;
-  password) change_password "${2:-admin}" ;;
+  account|password) change_account "${2:-}" ;;
   uninstall) uninstall_panel ;;
   menu|"") menu ;;
-  *) die "用法：nexusgate {status|restart|logs|backup|restore|update|domain|cert|password|uninstall|menu}" ;;
+  *) die "用法：nexusgate {status|restart|logs|backup|restore|update|domain|cert|account|uninstall|menu}" ;;
 esac

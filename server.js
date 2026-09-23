@@ -16,7 +16,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -110,7 +110,7 @@ function publicDeployment(item) {
 }
 
 function publicServer(item) {
-  return { ...item };
+  return { ...item, pendingCleanup: store.data.deployments.filter((entry) => entry.serverId === item.id && entry.archived && entry.status !== 'deleted').length };
 }
 
 function getIp(req) {
@@ -363,7 +363,7 @@ async function handleAdminApi(req, res, pathname) {
       },
       version: VERSION,
       activity: data.activity.slice(0, 12),
-      degraded: data.deployments.filter((item) => item.status === 'failed').map(publicDeployment).slice(0, 10)
+      degraded: data.deployments.filter((item) => !item.archived && item.status === 'failed').map(publicDeployment).slice(0, 10)
     });
     return true;
   }
@@ -425,8 +425,11 @@ async function handleAdminApi(req, res, pathname) {
     await store.transaction((data) => {
       const index = data.servers.findIndex((item) => item.id === serverItem.id);
       if (index < 0) throw Object.assign(new Error('服务器不存在'), { statusCode: 404 });
-      if (data.deployments.some((item) => item.serverId === serverItem.id && !['deleted', 'failed'].includes(item.status))) {
-        throw Object.assign(new Error('服务器仍有活动部署，不能删除'), { statusCode: 409 });
+      if (data.deployments.some((item) => item.serverId === serverItem.id && item.status !== 'deleted')) {
+        throw Object.assign(new Error('设备仍有待清理资源。先删除关联线路并等待 Agent 上线确认清理，再删除设备'), { statusCode: 409 });
+      }
+      if (data.chains.some((item) => item.exitServerId === serverItem.id || item.relayServerIds.includes(serverItem.id))) {
+        throw Object.assign(new Error('设备仍被线路引用。请先编辑或删除关联线路'), { statusCode: 409 });
       }
       data.servers.splice(index, 1);
       for (const agent of data.agents.filter((item) => item.serverId === serverItem.id)) agent.status = 'revoked';
@@ -450,6 +453,50 @@ async function handleAdminApi(req, res, pathname) {
     });
     sendJson(res, 201, { token: raw, expiresAt: token.expiresAt });
     return true;
+  }
+  const cleanup = route('/api/servers/:id/cleanup', pathname);
+  if (cleanup && req.method === 'POST') {
+    const count = await store.transaction((data) => {
+      if (!data.servers.some((item) => item.id === cleanup.id)) throw Object.assign(new Error('服务器不存在'), { statusCode: 404 });
+      let queued = 0;
+      for (const deployment of data.deployments.filter((item) => item.serverId === cleanup.id && item.archived && item.status !== 'deleted')) {
+        const pending = data.jobs.some((job) => job.deploymentId === deployment.id && job.action === 'delete_resource' && ['queued', 'running'].includes(job.status));
+        if (pending) continue;
+        data.jobs.push({ id: id('job'), serverId: cleanup.id, deploymentId: deployment.id, action: 'delete_resource',
+          payload: { resourceId: deployment.resourceId }, status: 'queued', attempts: 0, createdAt: nowIso(), updatedAt: nowIso(), error: null, leaseUntil: null });
+        deployment.status = 'removing'; deployment.updatedAt = nowIso(); queued += 1;
+      }
+      audit(data, actor, 'retry_cleanup', cleanup.id, { queued });
+      return queued;
+    });
+    sendJson(res, 202, { queued: count }); return true;
+  }
+  const forget = route('/api/servers/:id/forget', pathname);
+  if (forget && req.method === 'POST') {
+    const body = await readJson(req);
+    const result = await store.transaction((data) => {
+      const index = data.servers.findIndex((item) => item.id === forget.id);
+      if (index < 0) throw Object.assign(new Error('服务器不存在'), { statusCode: 404 });
+      const server = data.servers[index];
+      if (body.confirm !== 'FORGET' || body.name !== server.name) throw Object.assign(new Error('请输入准确设备名称以确认'), { statusCode: 400 });
+      if (server.status === 'online') throw Object.assign(new Error('在线设备不能强制遗忘，请先正常停用并清理资源'), { statusCode: 409 });
+      if (data.chains.some((item) => item.exitServerId === server.id || item.relayServerIds.includes(server.id))) {
+        throw Object.assign(new Error('设备仍被线路引用，请先删除关联线路'), { statusCode: 409 });
+      }
+      const residual = data.deployments.filter((item) => item.serverId === server.id && item.status !== 'deleted');
+      if (residual.some((item) => !item.archived)) throw Object.assign(new Error('仍有未归档部署，请先删除关联线路'), { statusCode: 409 });
+      const residualIds = new Set(residual.map((item) => item.id));
+      if (data.jobs.some((item) => residualIds.has(item.deploymentId) && item.status === 'running')) {
+        throw Object.assign(new Error('设备任务尚在执行，不能强制遗忘'), { statusCode: 409 });
+      }
+      data.jobs = data.jobs.filter((item) => !residualIds.has(item.deploymentId));
+      data.deployments = data.deployments.filter((item) => !residualIds.has(item.id));
+      for (const agent of data.agents.filter((item) => item.serverId === server.id)) agent.status = 'revoked';
+      data.servers.splice(index, 1);
+      audit(data, actor, 'force_forget_server', server.id, { name: server.name, unconfirmedResources: residual.length });
+      return { unconfirmedResources: residual.length };
+    });
+    sendJson(res, 200, { ok: true, ...result }); return true;
   }
 
   if (req.method === 'GET' && pathname === '/api/customers') {
@@ -525,8 +572,8 @@ async function handleAdminApi(req, res, pathname) {
     await store.transaction((data) => {
       const index = data.customers.findIndex((item) => item.id === customerItem.id);
       if (index < 0) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
-      if (data.deployments.some((item) => item.customerId === customerItem.id && !['deleted', 'failed'].includes(item.status))) {
-        throw Object.assign(new Error('客户仍有活动部署，不能删除'), { statusCode: 409 });
+      if (data.deployments.some((item) => item.customerId === customerItem.id && item.status !== 'deleted')) {
+        throw Object.assign(new Error('客户仍有待清理资源。先删除关联线路并等待 Agent 确认清理'), { statusCode: 409 });
       }
       data.customers.splice(index, 1);
       for (const chain of data.chains) chain.customerIds = chain.customerIds.filter((value) => value !== customerItem.id);
@@ -537,7 +584,7 @@ async function handleAdminApi(req, res, pathname) {
   }
 
   if (req.method === 'GET' && pathname === '/api/chains') {
-    sendJson(res, 200, { chains: store.data.chains, deployments: store.data.deployments.map(publicDeployment) });
+    sendJson(res, 200, { chains: store.data.chains, deployments: store.data.deployments.filter((item) => !item.archived).map(publicDeployment) });
     return true;
   }
   if (req.method === 'POST' && pathname === '/api/chains') {
@@ -585,16 +632,32 @@ async function handleAdminApi(req, res, pathname) {
     sendJson(res, 200, { chain: chain.item, requiresRedeploy: chain.requiresRedeploy }); return true;
   }
   if (chainItem && req.method === 'DELETE') {
-    await store.transaction((data) => {
+    const cleanupPending = await store.transaction((data) => {
       const index = data.chains.findIndex((item) => item.id === chainItem.id);
       if (index < 0) throw Object.assign(new Error('链路不存在'), { statusCode: 404 });
-      if (data.deployments.some((item) => item.chainId === chainItem.id && !['deleted', 'failed'].includes(item.status))) {
-        throw Object.assign(new Error('链路仍在运行，请先停用'), { statusCode: 409 });
+      const deployments = data.deployments.filter((item) => item.chainId === chainItem.id && item.status !== 'deleted');
+      if (deployments.some((item) => item.status === 'active')) {
+        throw Object.assign(new Error('线路仍有运行中的资源。请先停用并等待 Agent 确认'), { statusCode: 409 });
+      }
+      if (data.jobs.some((job) => deployments.some((item) => item.id === job.deploymentId) && job.status === 'running')) {
+        throw Object.assign(new Error('部署任务正在设备上执行，请稍后刷新再删除'), { statusCode: 409 });
+      }
+      // Retain hidden deployment tombstones until the agent confirms deletion. This prevents
+      // reusing occupied ports or silently leaving orphaned Xray resources on offline machines.
+      for (const deployment of deployments) {
+        for (const job of data.jobs.filter((entry) => entry.deploymentId === deployment.id && entry.status === 'queued')) {
+          job.status = 'failed'; job.error = '线路已删除，原任务取消'; job.updatedAt = nowIso();
+        }
+        data.jobs.push({ id: id('job'), serverId: deployment.serverId, deploymentId: deployment.id,
+          action: 'delete_resource', payload: { resourceId: deployment.resourceId }, status: 'queued', attempts: 0,
+          createdAt: nowIso(), updatedAt: nowIso(), error: null, leaseUntil: null });
+        deployment.status = 'removing'; deployment.archived = true; deployment.clientUri = null; deployment.updatedAt = nowIso();
       }
       data.chains.splice(index, 1);
-      audit(data, actor, 'delete_chain', chainItem.id);
+      audit(data, actor, 'delete_chain', chainItem.id, { cleanupPending: deployments.length });
+      return deployments.length;
     });
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, cleanupPending });
     return true;
   }
 

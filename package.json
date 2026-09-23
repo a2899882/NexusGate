@@ -1,6 +1,6 @@
 {
   "name": "nexusgate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Lightweight multi-relay, multi-exit proxy orchestration control plane",
   "type": "commonjs",
@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check agent/agent.js && node --check public/app.js"
+    "check": "node --check server.js && node --check agent/agent.js && node --check public/app.js && node --check scripts/reset-password.js && bash -n scripts/nexusgate.sh"
   },
   "license": "MIT"
 }

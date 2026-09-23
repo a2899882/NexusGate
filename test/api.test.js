@@ -35,6 +35,8 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   t.after(async () => { child.kill('SIGTERM'); await fs.promises.rm(dir, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${port}`;
   await waitFor(`${base}/healthz`);
+  const frontend = await fetch(`${base}/app.js`);
+  assert.equal(frontend.headers.get('cache-control'), 'no-store');
 
   const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'test-password' }) });
   assert.equal(login.status, 200);
@@ -68,4 +70,25 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   const directDeploy = await request(`/api/chains/${direct.id}/deploy`, 'POST', {});
   assert.equal(directDeploy.deployments.length, 1);
   assert.equal(directDeploy.deployments[0].role, 'direct');
+
+  // A failed / not-yet-applied route can disappear from the UI immediately,
+  // while cleanup tombstones retain the ports until agents acknowledge removal.
+  const deleted = await request(`/api/chains/${chain.id}`, 'DELETE');
+  assert.equal(deleted.cleanupPending, 2);
+  const afterDelete = await request('/api/chains');
+  assert.equal(afterDelete.chains.some((item) => item.id === chain.id), false);
+  assert.equal(afterDelete.deployments.some((item) => item.chainId === chain.id), false);
+  const source = JSON.parse(await fs.promises.readFile(path.join(dir, 'data.json'), 'utf8'));
+  assert.equal(source.deployments.filter((item) => item.chainId === chain.id && item.archived && item.status === 'removing').length, 2);
+  const blocked = await fetch(`${base}/api/servers/${exit.id}`, { method:'DELETE', headers:{ cookie, 'x-csrf-token':session.csrf } });
+  assert.equal(blocked.status, 409);
+  const retry = await request(`/api/servers/${exit.id}/cleanup`, 'POST', {});
+  assert.equal(retry.queued, 0);
+  const forgotten = await request(`/api/servers/${exit.id}/forget`, 'POST', { confirm:'FORGET', name:'落地 01' });
+  assert.equal(forgotten.unconfirmedResources, 1);
+  assert.equal((await request('/api/servers')).servers.some((item) => item.id === exit.id), false);
+  const renamed = await request('/api/account', 'PATCH', { username:'owner_2', currentPassword:'test-password', newPassword:'new-password-456' });
+  assert.equal(renamed.reauthenticate, true);
+  const relogin = await fetch(`${base}/api/auth/login`, { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ username:'owner_2', password:'new-password-456' }) });
+  assert.equal(relogin.status, 200);
 });
