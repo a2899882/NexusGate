@@ -77,6 +77,14 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   const jobs = await request('/api/jobs');
   assert.equal(jobs.jobs.length, 2);
   assert.ok(jobs.jobs.every((job) => job.status === 'queued'));
+  const exitPoll = await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[exit.id]}` } });
+  const exitJob = (await exitPoll.json()).job;
+  const failed = await fetch(`${base}/api/agent/jobs/${exitJob.id}/complete`, { method:'POST',
+    headers:{ authorization:`Bearer ${agentKeys[exit.id]}`, 'content-type':'application/json' },
+    body:JSON.stringify({ success:false, error:'PrivateKey: example_secret Password (PublicKey): example_public' }) });
+  assert.equal(failed.status, 200);
+  assert.doesNotMatch(JSON.stringify(await request('/api/jobs')), /example_secret/);
+  assert.doesNotMatch(JSON.stringify(await request('/api/chains')), /example_secret/);
   const changed = await request(`/api/chains/${chain.id}`, 'PATCH', { realityServerName: 'www.tesla.com' });
   assert.equal(changed.requiresRedeploy, true);
   assert.equal(changed.chain.status, 'changes_pending');

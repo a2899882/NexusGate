@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.4.0'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.5.0'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -93,7 +93,7 @@ async function load(page = state.page) {
 function setPage(page) {
   state.page = page; state.search = ''; closeSidebar();
   $$('#nav button').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
-  const titles = { overview:'概览', servers:'服务器', customers:'客户', chains:'线路', deployments:'部署与链接', operations:'设置与运维' };
+  const titles = { overview:'概览', servers:'服务器', customers:'客户与订阅', chains:'转发与节点', deployments:'部署与链接', operations:'设置与运维' };
   $('#page-title').textContent = titles[page]; $('#breadcrumb').textContent = `NEXUSGATE / ${titles[page]}`;
   load(page);
 }
@@ -117,7 +117,7 @@ function renderOverview() {
   const events = ((state.overview && state.overview.activity) || []).map((event) => `<div class="event"><i class="event-dot"></i><div><b>${esc(auditText[event.action] || event.action)}</b><small>${esc(event.actor)} · ${esc(event.target)}</small></div><time>${fmtDate(event.at)}</time></div>`).join('');
   const failures = ((state.overview && state.overview.degraded) || []).length;
   return `<section class="metrics">${metrics.map(([label,value,note,color]) => `<article class="metric" style="--accent:${color}"><span>${label}</span><strong>${value}</strong><small>${note}</small></article>`).join('')}</section>
-    ${failures ? `<div class="notice warning" style="margin-bottom:16px">检测到 ${failures} 个失败部署。请到“线路编排”查看错误后使用“修复”或“重新部署”。</div>` : ''}
+    ${failures ? `<div class="notice warning" style="margin-bottom:16px">检测到 ${failures} 个失败部署。请到“转发与节点”查看错误后使用“修复失败项”。更新 Agent 后无需重建节点。</div>` : ''}
     <section class="grid-2"><article class="panel"><div class="panel-head"><div><h2>设备健康</h2><p>超过三分钟未上报将标记离线</p></div><button class="ghost" data-page-jump="servers">查看全部</button></div><div class="panel-body health-list">${serverRows || empty('还没有设备','先添加入口、出口或综合节点')}</div></article>
     <article class="panel"><div class="panel-head"><div><h2>最近活动</h2><p>重要操作审计记录</p></div></div><div class="panel-body timeline">${events || empty('暂无活动','操作记录会显示在这里')}</div></article></section>`;
 }
@@ -225,7 +225,7 @@ function serverForm(item = null) {
     <label>设备名称<input name="name" value="${esc(server.name || '')}" placeholder="新加坡入口 01" required></label><label>用途<select name="role"><option value="relay"${selected('relay',server.role)}>入口 / 转发</option><option value="exit"${selected('exit',server.role)}>出口 / 落地</option><option value="hybrid"${selected('hybrid',server.role)}>综合节点</option></select></label>
     <label>地区 / 分组<input name="region" value="${esc(server.region || '')}" placeholder="新加坡"></label><label>公网 IPv4 / 域名<input name="publicAddress" value="${esc(server.publicAddress || '')}" placeholder="203.0.113.10" required></label>
     <label>公网 IPv6（可选）<input name="publicAddressV6" value="${esc(server.publicAddressV6 || '')}" placeholder="2001:db8::10"></label><label>标签（逗号分隔）<input name="labels" value="${esc((server.labels || []).join(', '))}" placeholder="CN2, 高带宽, 主力"></label>
-    <label class="wide">节点 TLS 域名（VLESS WS TLS 使用）<input name="tlsDomain" value="${esc(server.tlsDomain || '')}" placeholder="node.example.com"><small>须解析到这台设备，并在设备上运行 ng-agent cert issue node.example.com 邮箱，或导入现有证书。面板机兼作落地机无需填写。</small></label>
+    <label class="wide">节点 TLS 域名（VLESS WS TLS / Hysteria 2）<input name="tlsDomain" value="${esc(server.tlsDomain || '')}" placeholder="node.example.com"><small>在节点机申请证书：80/TCP 空闲可运行 ng-agent cert issue 域名 邮箱；面板机占用 80/TCP 或使用 CF DNS 时可运行 ng-agent cert issue-cloudflare 域名 邮箱 /root/cloudflare.ini。仅用作出口时无需填写。</small></label>
     <label>可用端口起点<input name="portRangeStart" type="number" value="${Number(server.portRangeStart || 20000)}" min="1024" max="65535" required></label><label>可用端口终点<input name="portRangeEnd" type="number" value="${Number(server.portRangeEnd || 50000)}" min="1024" max="65535" required></label>
     <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '添加设备'}</button></div></form>`);
 }
@@ -299,7 +299,7 @@ function chainForm(item = null) {
     <label data-forward-only>出口端口<div class="inline-fields"><select name="exitPortMode" data-chain-sync><option value="random"${selected('random',chain.exitPortMode)}>范围内随机</option><option value="fixed"${selected('fixed',chain.exitPortMode)}>固定端口</option></select><input name="exitPort" type="number" value="${esc(chain.exitPort || '')}" placeholder="固定时填写" min="1024" max="65535"></div></label>
     <div class="section-title">客户分配</div>
     <div class="wide picker-field"><span>客户</span>${multiPicker('customerIds',state.customers.filter((customer) => customer.status === 'active' || (chain.customerIds || []).includes(customer.id)),chain.customerIds,(customer) => `${customer.group || '未分组'}${customer.status !== 'active' ? ' · 已停用' : ''}`,'客户')}<small>批量选择多个客户时请使用随机端口。</small></div>
-    <div class="notice wide">VLESS WS TLS 需要入口设备的有效证书；Hysteria 2 和 AnyTLS 仍需要独立协议引擎，未开放部署。</div>
+    <div class="notice wide">VLESS WS TLS 与 Hysteria 2 需要入口设备的有效证书。Hysteria 2 使用 UDP，请放行入口端口。先在设备填写 TLS 域名，再用 ng-agent cert issue 或 issue-cloudflare 申请证书；AnyTLS 仍需 sing-box 引擎。</div>
     ${item && !['draft'].includes(item.status) ? '<div class="notice warning wide">保存运行中线路只会标记“待重新部署”，不会立即中断服务。确认后再点击“应用修改”。</div>' : ''}
     <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '创建线路'}</button></div></form>`);
   syncChainForm();

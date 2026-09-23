@@ -10,6 +10,7 @@ const { sendJson, sendError, readJson, route, serveStatic } = require('./lib/htt
 const { PROFILE_CATALOG, REALITY_PRESETS, validateEntryProtocol, validateProtocolPair, isRealityProtocol } = require('./lib/protocols');
 const { Orchestrator, audit, id, nowIso } = require('./lib/orchestrator');
 const { formatSubscription } = require('./lib/subscriptions');
+const { redactSecrets } = require('./lib/redact');
 
 const APP_ROOT = __dirname;
 const PUBLIC_DIR = path.join(APP_ROOT, 'public');
@@ -17,7 +18,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -111,11 +112,12 @@ function normalizeChain(body, current = {}) {
 
 function publicDeployment(item) {
   const { credentials, clientTemplate, ...safe } = item;
-  return safe;
+  return { ...safe, ...(safe.error ? { error: redactSecrets(safe.error) } : {}) };
 }
 
 function publicServer(item) {
-  return { ...item, pendingCleanup: store.data.deployments.filter((entry) => entry.serverId === item.id && entry.archived && entry.status !== 'deleted').length };
+  return { ...item, ...(item.engine ? { engine: { ...item.engine, detail: redactSecrets(item.engine.detail) } } : {}),
+    pendingCleanup: store.data.deployments.filter((entry) => entry.serverId === item.id && entry.archived && entry.status !== 'deleted').length };
 }
 
 function publicCustomer(item) {
@@ -270,7 +272,7 @@ async function handleAgent(req, res, pathname) {
         server.lastSeenAt = nowIso();
         server.system = body.system || server.system || {};
         server.engine = body.engine && ['ready','error'].includes(body.engine.status)
-          ? { status: body.engine.status, detail: cleanText(body.engine.detail, 400), at: nowIso() }
+          ? { status: body.engine.status, detail: redactSecrets(cleanText(body.engine.detail, 400)), at: nowIso() }
           : server.engine || null;
       }
     });
@@ -689,7 +691,7 @@ async function handleAdminApi(req, res, pathname) {
   }
 
   if (req.method === 'GET' && pathname === '/api/jobs') {
-    sendJson(res, 200, { jobs: store.data.jobs.slice(-200).reverse().map(({ payload, ...job }) => job) });
+    sendJson(res, 200, { jobs: store.data.jobs.slice(-200).reverse().map(({ payload, ...job }) => ({ ...job, ...(job.error ? { error: redactSecrets(job.error) } : {}) })) });
     return true;
   }
   if (req.method === 'GET' && pathname === '/api/backup') {
@@ -830,6 +832,19 @@ async function housekeeping() {
 
 async function main() {
   await store.init();
+  // Earlier Agents reported the full x25519 output on parse failures.
+  // Remove any private key from persisted job/deployment history on upgrade.
+  if ([...store.data.jobs, ...store.data.deployments, ...store.data.chains, ...store.data.servers].some((item) =>
+    item.error && item.error !== redactSecrets(item.error) || item.lastError && item.lastError !== redactSecrets(item.lastError) ||
+    item.engine?.detail && item.engine.detail !== redactSecrets(item.engine.detail))) {
+    await store.transaction((data) => {
+      for (const item of [...data.jobs, ...data.deployments, ...data.chains, ...data.servers]) {
+        if (item.error) item.error = redactSecrets(item.error);
+        if (item.lastError) item.lastError = redactSecrets(item.lastError);
+        if (item.engine?.detail) item.engine.detail = redactSecrets(item.engine.detail);
+      }
+    });
+  }
   if (store.data.customers.some((item) => !item.subscriptionToken)) {
     await store.transaction((data) => { for (const customer of data.customers) if (!customer.subscriptionToken) customer.subscriptionToken = randomToken(32); });
   }

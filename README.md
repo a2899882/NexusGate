@@ -2,7 +2,7 @@
 
 面向多入口机、多出口机和多客户场景的轻量集中编排面板。一个控制面统一管理设备、客户额度、转发线路、单机节点、部署任务和客户端链接，不再逐台打开不同面板维护。
 
-> 当前版本：`v0.4.0`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
+> 当前版本：`v0.5.0`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
 
 ## 核心模型
 
@@ -28,7 +28,7 @@ flowchart TB
 ## 当前已实现
 
 - 默认明亮、可切换暗色的中文响应式 UI；登录页仅保留账号与密码，不显示业务介绍。
-- 固定宽度侧栏与可阅读的横排导航：“概览、服务器、客户、线路、部署与链接、设置与运维”。
+- 固定宽度侧栏与可阅读的横排导航：“概览、服务器、客户与订阅、转发与节点、部署与链接、设置与运维”。
 - 设备、客户、线路均可创建后编辑；运行中线路修改后进入“待重新部署”。列表操作按行收纳，长列表不再因按钮换行变高。
 - 线路表单中的入口设备和客户可搜索后多选，长列表在固定高度内滚动。
 - 支持完整重建失败线路，以及只重试失败部署项。
@@ -37,7 +37,7 @@ flowchart TB
 - 任务 5 分钟租约、超时自动重试，连续 3 次失败才标记异常。
 - 客户到期使用日期选择器、常用期限下拉和时间下拉，不要求手写日期格式。
 - 客户独立凭据、流量额度、到期、滚动 IP 上限、用量清零及启停。
-- Reality 私钥只在节点机生成；控制面只接收客户端公钥。
+- Reality 私钥只在节点机生成；控制面只接收客户端公钥。升级时旧部署错误中的误报私钥会从历史记录中脱敏。
 - Tesla、Amazon、Apple、Intel、AMD Reality 目标预设，也可自定义。
 - IPv4、IPv6 和双栈监听；IPv6 客户端链接会自动使用方括号格式。
 - JSON 在线备份/恢复，以及包含数据、环境和 Caddy 配置的迁移压缩包。
@@ -58,6 +58,7 @@ flowchart TB
 | 客户入口 / 单机节点 | VLESS + Reality | 可部署 |
 | 客户入口 / 单机节点 | VLESS + WebSocket（无 TLS） | 可部署，建议仅配合可信网络或外层 TLS |
 | 客户入口 / 单机节点 | VLESS + WebSocket + TLS | 可部署；入口设备需填写 TLS 域名并安装有效证书 |
+| 客户入口 / 单机节点 | Hysteria 2 | 可部署（测试阶段）；入口证书、UDP 入站端口和新版 Xray 必需 |
 | 客户入口 / 单机节点 | VMess + WebSocket（无 TLS） | 可部署，兼容模式 |
 | 客户入口 / 单机节点 | Shadowsocks 2022 AES-128 / AES-256 | 可部署 |
 | 客户入口 / 单机节点 | Shadowsocks AES-128-GCM / AES-256-GCM | 可部署 |
@@ -65,9 +66,27 @@ flowchart TB
 | 入口 → 出口 | 上述四种 Shadowsocks | 可部署 |
 | 入口 → 出口 | VLESS TCP | 可部署，建议可信网络或外层隧道 |
 | 入口 → 出口 | SOCKS5 用户密码 | 可部署，仅建议可信网络或外层隧道 |
-| 客户入口 | Hysteria2 / AnyTLS | 尚未开放；缺少可验证的 sing-box 引擎、证书和统计链路 |
+| 客户入口 | AnyTLS | 尚未开放；需要独立 sing-box 引擎和与现有额度/IP 管理兼容的统计链路 |
 
-Hysteria2 和 AnyTLS 需要 sing-box/QUIC/TLS 证书管理及真实来源 IP 和用量统计链路。项目不会把未完成的适配器伪装成可用功能。VLESS WS TLS 用系统证书；在入口设备上使用 `ng-agent cert issue` 申请并配置自动续签（需要公网域名指向该机器、80/TCP 无占用），或用 `ng-agent cert import` 导入已有证书。已运行 Caddy 的面板机若要兼作 TLS 入口，应导入现有有效证书；单纯作出口无需节点证书。
+新版 Xray 已提供 Hysteria 2 入站，NexusGate 复用当前 Xray Agent 的任务、统计及出口路由。VLESS WS TLS 与 Hysteria 2 均需入口证书；Hysteria 2 使用所选端口的 **UDP**。AnyTLS 是不同的协议，仍需要 sing-box 和独立的统计与清理适配，尚不能把它当作 VLESS 选项使用。
+
+### Cloudflare 域名和节点证书
+
+1. 在 CF 添加指向**入口设备公网 IP** 的节点子域名 A/AAAA 记录，例如 `node.example.com`。Reality、Hysteria 2 和大多数自定义 TCP/UDP 端口需要设置为 **DNS only（灰云）**；橙云的普通 HTTP 代理不会透传这些协议。证书的 DNS 验证与节点代理状态是不同设置。
+2. 在“服务器 → 编辑”填写同一个“节点 TLS 域名”。只用作出口的面板机器不需要节点证书；面板机作为 TLS 入口时，Caddy 已占用 80/TCP，推荐 DNS 验证。
+3. 在入口设备 SSH 创建 CF API Token，权限只授予相应 Zone 的 `Zone:DNS:Edit`；在节点机以 root 创建 `/root/cloudflare.ini`，内容为 `dns_cloudflare_api_token = <令牌>`，执行 `chmod 600 /root/cloudflare.ini`。不要把令牌发到聊天或粘贴进控制台。
+4. 在同一入口设备运行：
+
+   ```bash
+   ng-agent cert issue-cloudflare node.example.com admin@example.com /root/cloudflare.ini
+   ng-agent cert status node.example.com
+   ```
+
+   Agent 会安装 Certbot Cloudflare 插件、使用 DNS-01 申请受信任证书、配置每日续签检查，并在证书更新时重启 Xray。DNS-01 不需要占用 80/TCP，也不要求节点域名当前解析到该设备。凭据文件应持续保留供续签使用。若该发行版没有相应插件，请按 Certbot 官方说明安装插件或使用 `import`。
+
+5. 如果 80/TCP 空闲且节点域名 DNS only 并已指向当前设备，也可运行 `ng-agent cert issue node.example.com admin@example.com` 使用 HTTP-01。已有合法证书则运行 `ng-agent cert import 域名 /path/fullchain.pem /path/privkey.pem`；手动导入的证书需要自行管理续签。
+
+先运行 `ng-agent-update` 升级旧 Agent，再申请证书。完成后在“转发与节点”点击“修复失败项”；不必删除客户、重新注册节点或改变面板的 HTTPS 域名。
 
 Reality 默认目标/SNI 为 `www.tesla.com:443`，也可选 Amazon、Apple、Intel、AMD 或自定义。目标必须实际接受所选 SNI，预设本身不是防共享或防盗用手段；访问控制依赖每客户随机 UUID、shortId 等凭据。
 
@@ -94,9 +113,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scri
 
 1. 在“服务器”添加入口、出口或综合节点。
 2. 点击“注册 / 重装”，复制一次性命令到目标 VPS 以 root 执行。
-3. 在“客户”创建客户。
-4. 在“线路”选择转发线路或单机直连，选择协议、设备、客户和端口策略。
-5. 点击部署，在“部署与链接”复制单条客户端链接，或在“客户 → 订阅链接”获取各客户端订阅和二维码。
+3. 在“客户与订阅”创建客户。
+4. 在“转发与节点”选择转发线路或单机直连，选择协议、设备、客户和端口策略。
+5. 点击部署，在“部署与链接”复制单条客户端链接，或在“客户与订阅 → 订阅链接”获取各客户端订阅和二维码。
 
 订阅 URL 属于凭据；请经 HTTPS 私下交付。自动识别格式根据客户端 User-Agent 返回 Clash/Mihomo 或 Base64；识别不准时使用固定格式。智能分流包含广告拦截、国内直连、AI/流媒体分组和自动延迟选择；客户端需要可用的 Mihomo geodata。Surge 格式只导出它支持的 SS、SOCKS5 和 VMess 节点；若无兼容节点则返回错误。sing-box JSON 是本机 127.0.0.1:2080 混合入站配置，可能与已有监听端口冲突。自定义订阅模板和可靠的一设备一凭据仍待开发。
 
@@ -133,6 +152,7 @@ ng-agent-update
 ng-agent uninstall         # 新版 Agent 在目标机交互卸载
 ng-agent doctor            # 检查心跳、Xray 配置、服务及最近错误
 ng-agent cert issue node.example.com admin@example.com
+ng-agent cert issue-cloudflare node.example.com admin@example.com /root/cloudflare.ini
 ng-agent cert import node.example.com /path/fullchain.pem /path/privkey.pem
 ng-agent cert status node.example.com
 ```

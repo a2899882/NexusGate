@@ -27,7 +27,7 @@ else
 fi
 printf '\n最近 Agent 与 Xray 日志：\n'
 if command -v journalctl >/dev/null && [[ -d /run/systemd/system ]]; then
-  journalctl -u nexusgate-agent -u nexusgate-xray -n 45 --no-pager -o short-iso 2>&1 | sed -E 's/(Bearer |NG_AGENT_KEY=)[^[:space:]]+/\1[REDACTED]/g'
+  journalctl -u nexusgate-agent -u nexusgate-xray -n 45 --no-pager -o short-iso 2>&1 | sed -E 's/(Bearer |NG_AGENT_KEY=)[^[:space:]]+/\1[REDACTED]/g; s/[Pp]rivate[[:space:]]*[Kk]ey:[[:space:]]*[^[:space:]]+/PrivateKey: [REDACTED]/g'
 else
   tail -n 45 /var/log/nexusgate/xray-error.log 2>/dev/null || true
 fi

@@ -26,7 +26,24 @@ test('builds a VLESS Reality to Shadowsocks 2022 chain', () => {
 });
 
 test('rejects unsupported protocol pairs', () => {
-  assert.throws(() => validateProtocolPair('hysteria2', 'shadowsocks-2022-aes128'), /Unsupported relay ingress/);
+  assert.throws(() => validateProtocolPair('anytls', 'shadowsocks-2022-aes128'), /Unsupported relay ingress/);
+});
+
+test('Hysteria 2 reuses Xray route and emits importable Clash and sing-box credentials', () => {
+  const { makeClash, makeSingBox } = require('../lib/subscriptions');
+  const credentials = newCredentialSet('hysteria2', 'shadowsocks-2022-aes128');
+  const node = buildRelayResource({ resourceId:'res_hy2_123', tagPrefix:'hy2-test', port:23000,
+    protocol:'hysteria2', exitProtocol:'shadowsocks-2022-aes128', exitServer:exit, exitPort:32001,
+    credentials, customer, tlsDomain:'node.example.com' });
+  assert.equal(node.inbounds[0].protocol, 'hysteria');
+  assert.equal(node.inbounds[0].streamSettings.method, 'hysteria');
+  assert.equal(node.inbounds[0].settings.users[0].auth, credentials.relayPassword);
+  assert.equal(node.inbounds[0].streamSettings.tlsSettings.certificates[0].keyFile, '/etc/nexusgate/tls/node.example.com/privkey.pem');
+  const uri = buildClientUri({ protocol:'hysteria2', relayServer:relay, relayPort:23000,
+    credentials, tlsDomain:'node.example.com', name:'H2 test' });
+  assert.match(uri, /^hysteria2:\/\//);
+  assert.match(makeClash([{ clientUri:uri }]), /type: "hysteria2"/);
+  assert.match(makeSingBox([{ clientUri:uri }]), /"type": "hysteria2"/);
 });
 
 test('builds direct Shadowsocks, SOCKS5 and IPv6 client resources', () => {

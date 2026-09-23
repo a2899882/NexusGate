@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -18,13 +18,19 @@ const CURSOR_FILE = process.env.NG_ACCESS_CURSOR || '/etc/nexusgate/access-curso
 const POLL_MS = Math.max(3, Number(process.env.NG_POLL_SECONDS || 8)) * 1000;
 let lastEngineError = '';
 
-if (!CONTROLLER || !AGENT_KEY) {
-  console.error('NG_CONTROLLER and NG_AGENT_KEY are required');
-  process.exit(1);
+function parseX25519(output) {
+  const privateKey = (output.match(/\bPrivate\s*Key\s*:\s*([A-Za-z0-9_-]+)/i) || [])[1];
+  const publicKey = (output.match(/\b(?:Public\s*Key|Password\s*\(\s*Public\s*Key\s*\)|Password)\s*:\s*([A-Za-z0-9_-]+)/i) || [])[1];
+  if (!privateKey || !publicKey) throw new Error('Unable to parse x25519 output (keys suppressed); update the Agent and Xray');
+  return { privateKey, publicKey };
 }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function log(...args) { console.log(new Date().toISOString(), ...args); }
+function safeError(value) {
+  return String(value || '').replace(/\bPrivate\s*Key\s*:\s*[^\s,;]+/gi, 'PrivateKey: [REDACTED]')
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]');
+}
 
 async function request(endpoint, options = {}) {
   const controller = new AbortController();
@@ -60,11 +66,9 @@ function realityKey(keyId) {
   const keys = loadKeys();
   if (keys[keyId]) return keys[keyId];
   const result = spawnSync(XRAY_BIN, ['x25519'], { encoding: 'utf8', timeout: 15000 });
-  if (result.status !== 0) throw new Error(`xray x25519 failed: ${result.stderr || result.stdout}`);
+  if (result.status !== 0) throw new Error('xray x25519 failed; run ng-agent doctor to inspect Xray locally');
   const output = `${result.stdout}\n${result.stderr}`;
-  const privateKey = (output.match(/Private\s*Key:\s*([^\s]+)/i) || [])[1];
-  const publicKey = (output.match(/Public\s*Key:\s*([^\s]+)/i) || output.match(/Password:\s*([^\s]+)/i) || [])[1];
-  if (!privateKey || !publicKey) throw new Error(`Unable to parse x25519 output: ${output.slice(0, 400)}`);
+  const { privateKey, publicKey } = parseX25519(output);
   keys[keyId] = { privateKey, publicKey, createdAt: new Date().toISOString() };
   saveKeys(keys);
   return keys[keyId];
@@ -106,7 +110,7 @@ function combinedConfig(resources) {
 
 function run(command, args, timeout = 30000) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout });
-  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed: ${(result.stderr || result.stdout || '').slice(0, 1200)}`);
+  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed: ${safeError(result.stderr || result.stdout || '').slice(0, 1200)}`);
   return result.stdout;
 }
 
@@ -116,7 +120,8 @@ function restartXray() {
 }
 
 function activateConfig() {
-  const candidate = `${CONFIG_FILE}.candidate`;
+  // Xray detects JSON from the file extension; a .candidate suffix is rejected.
+  const candidate = `${CONFIG_FILE}.candidate.json`;
   const previous = `${CONFIG_FILE}.previous`;
   fs.writeFileSync(candidate, `${JSON.stringify(combinedConfig(readResources()), null, 2)}\n`, { mode: 0o600 });
   run(XRAY_BIN, ['run', '-test', '-config', candidate]);
@@ -188,8 +193,8 @@ async function execute(job) {
     await request(`/api/agent/jobs/${encodeURIComponent(job.id)}/complete`, { method: 'POST', body: JSON.stringify({ success: true, result }) });
     log('Completed', job.id);
   } catch (error) {
-    log('Failed', job.id, error.message);
-    try { await request(`/api/agent/jobs/${encodeURIComponent(job.id)}/complete`, { method: 'POST', body: JSON.stringify({ success: false, error: error.message }) }); }
+    log('Failed', job.id, safeError(error.message));
+    try { await request(`/api/agent/jobs/${encodeURIComponent(job.id)}/complete`, { method: 'POST', body: JSON.stringify({ success: false, error: safeError(error.message) }) }); }
     catch (reportError) { log('Unable to report failure', reportError.message); }
   }
 }
@@ -279,15 +284,18 @@ async function pollLoop() {
 }
 
 async function main() {
+  if (!CONTROLLER || !AGENT_KEY) throw new Error('NG_CONTROLLER and NG_AGENT_KEY are required');
   ensureDirectories();
   log(`NexusGate Agent v${VERSION} starting`);
   // Keep the control channel alive even when a stale node configuration cannot start.
   // The administrator can then see the engine error and a repair job can be claimed.
-  try { activateConfig(); } catch (error) { lastEngineError = error.message; log('Initial Xray activation failed', error.message); }
+  try { activateConfig(); } catch (error) { lastEngineError = safeError(error.message); log('Initial Xray activation failed', lastEngineError); }
   try { await heartbeat(); } catch (error) { log('Initial heartbeat failed', error.message); }
   setInterval(() => heartbeat().catch((error) => log('Heartbeat failed', error.message)), 30000).unref();
   usageLoop();
   await pollLoop();
 }
 
-main().catch((error) => { console.error(error); process.exit(1); });
+if (require.main === module) main().catch((error) => { console.error(error); process.exit(1); });
+
+module.exports = { parseX25519, activateConfig, combinedConfig, applyResource };

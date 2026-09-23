@@ -15,12 +15,16 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/ru
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-uninstall.sh" -o "$tmp_dir/uninstall.sh"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-doctor.sh" -o "$tmp_dir/doctor.sh"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-cert.sh" -o "$tmp_dir/cert.sh"
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-update.sh" -o "$tmp_dir/update.sh"
+[[ -s "$tmp_dir/update.sh" ]] || die 'Agent 升级脚本下载不完整'
 node --check "$tmp_dir/agent.js"
 install -m 0644 "$tmp_dir/agent.js" /opt/nexusgate-agent/agent.js
 install -m 0755 "$tmp_dir/run.sh" /opt/nexusgate-agent/run.sh
 install -m 0755 "$tmp_dir/uninstall.sh" /usr/local/sbin/ng-agent-uninstall
 install -m 0755 "$tmp_dir/doctor.sh" /usr/local/sbin/ng-agent-doctor
 install -m 0755 "$tmp_dir/cert.sh" /usr/local/sbin/ng-agent-cert
+install -m 0755 "$tmp_dir/update.sh" /usr/local/sbin/ng-agent-update.next
+mv -f -- /usr/local/sbin/ng-agent-update.next /usr/local/sbin/ng-agent-update
 cat > /usr/local/sbin/ng-agent <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail

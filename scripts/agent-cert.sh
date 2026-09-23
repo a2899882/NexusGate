@@ -26,6 +26,73 @@ activate() {
   openssl x509 -in "$target/fullchain.pem" -enddate -noout
 }
 
+install_certbot() {
+  if ! command -v certbot >/dev/null; then
+    if command -v apt-get >/dev/null; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot
+    elif command -v dnf >/dev/null; then dnf install -y certbot
+    elif command -v apk >/dev/null; then apk add --no-cache certbot
+    else printf '无法安装 certbot，请使用 import 导入有效证书\n' >&2; exit 1; fi
+  fi
+}
+
+install_cloudflare_plugin() {
+  if certbot plugins 2>/dev/null | grep -q 'dns-cloudflare'; then return; fi
+  if command -v apt-get >/dev/null; then
+    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-certbot-dns-cloudflare
+  elif command -v dnf >/dev/null; then
+    dnf install -y python3-certbot-dns-cloudflare
+  elif command -v apk >/dev/null; then
+    apk add --no-cache certbot-dns-cloudflare
+  else
+    printf '无法自动安装 Cloudflare DNS 插件，请参照 Certbot 文档安装后重试\n' >&2; exit 1
+  fi
+  certbot plugins 2>/dev/null | grep -q 'dns-cloudflare' || { printf '当前 certbot 未发现 dns-cloudflare 插件；检查 Certbot 与插件是否来自同一安装来源\n' >&2; exit 1; }
+}
+
+activate_renewal() {
+  local cert="/etc/letsencrypt/live/$domain"
+  validate "$cert/fullchain.pem" "$cert/privkey.pem"
+  install -d -m 0700 "$target"
+  ln -sfn "$cert/fullchain.pem" "$target/fullchain.pem"
+  ln -sfn "$cert/privkey.pem" "$target/privkey.pem"
+  install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+  cat > /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh <<'EOF'
+#!/usr/bin/env bash
+if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+  systemctl try-restart nexusgate-xray.service
+elif command -v rc-service >/dev/null; then
+  rc-service nexusgate-xray restart
+fi
+EOF
+  chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh
+  if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+    cat > /etc/systemd/system/nexusgate-cert-renew.service <<'EOF'
+[Unit]
+Description=Renew NexusGate node TLS certificate
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env certbot renew --quiet
+EOF
+    cat > /etc/systemd/system/nexusgate-cert-renew.timer <<'EOF'
+[Unit]
+Description=Check NexusGate node TLS certificates daily
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=3h
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload && systemctl enable --now nexusgate-cert-renew.timer
+  elif command -v rc-service >/dev/null; then
+    install -d -m 0755 /etc/periodic/daily
+    printf '#!/bin/sh\ncertbot renew --quiet\n' > /etc/periodic/daily/nexusgate-cert-renew
+    chmod 0755 /etc/periodic/daily/nexusgate-cert-renew
+    rc-service crond start >/dev/null 2>&1 || true
+  fi
+  activate
+}
+
 case "$action" in
   import)
     [[ $# -eq 4 ]] || { printf '用法：ng-agent cert import 域名 /path/fullchain.pem /path/privkey.pem\n' >&2; exit 1; }
@@ -36,56 +103,22 @@ case "$action" in
     activate ;;
   issue)
     [[ $# -eq 3 && "$3" == *@* ]] || { printf '用法：ng-agent cert issue 域名 邮箱（节点须放行 80/TCP，且没有其他程序占用）\n' >&2; exit 1; }
-    if ! command -v certbot >/dev/null; then
-      if command -v apt-get >/dev/null; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot
-      elif command -v dnf >/dev/null; then dnf install -y certbot
-      elif command -v apk >/dev/null; then apk add --no-cache certbot
-      else printf '无法安装 certbot，请使用 import 导入有效证书\n' >&2; exit 1; fi
-    fi
+    install_certbot
     certbot certonly --standalone --preferred-challenges http --non-interactive --agree-tos --email "$3" -d "$domain"
-    validate "/etc/letsencrypt/live/$domain/fullchain.pem" "/etc/letsencrypt/live/$domain/privkey.pem"
-    install -d -m 0700 "$target"
-    ln -sfn "/etc/letsencrypt/live/$domain/fullchain.pem" "$target/fullchain.pem"
-    ln -sfn "/etc/letsencrypt/live/$domain/privkey.pem" "$target/privkey.pem"
-    install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
-    cat > /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh <<'EOF'
-#!/usr/bin/env bash
-if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
-  systemctl try-restart nexusgate-xray.service
-elif command -v rc-service >/dev/null; then
-  rc-service nexusgate-xray restart
-fi
-EOF
-    chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh
-    if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
-      cat > /etc/systemd/system/nexusgate-cert-renew.service <<'EOF'
-[Unit]
-Description=Renew NexusGate node TLS certificate
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/certbot renew --quiet
-EOF
-      cat > /etc/systemd/system/nexusgate-cert-renew.timer <<'EOF'
-[Unit]
-Description=Check NexusGate node TLS certificates daily
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=3h
-Persistent=true
-[Install]
-WantedBy=timers.target
-EOF
-      systemctl daemon-reload && systemctl enable --now nexusgate-cert-renew.timer
-    elif command -v rc-service >/dev/null; then
-      install -d -m 0755 /etc/periodic/daily
-      printf '#!/bin/sh\ncertbot renew --quiet\n' > /etc/periodic/daily/nexusgate-cert-renew
-      chmod 0755 /etc/periodic/daily/nexusgate-cert-renew
-      rc-service crond start >/dev/null 2>&1 || true
-    fi
-    activate ;;
+    activate_renewal ;;
+  issue-cloudflare)
+    [[ $# -eq 4 && "$3" == *@* && -f "$4" ]] || { printf '用法：ng-agent cert issue-cloudflare 域名 邮箱 /root/cloudflare.ini\n' >&2; exit 1; }
+    [[ -O "$4" ]] || { printf 'Cloudflare 凭据文件须由 root 拥有\n' >&2; exit 1; }
+    chmod 0600 "$4"
+    grep -Eq '^[[:space:]]*dns_cloudflare_api_token[[:space:]]*=' "$4" || { printf '凭据文件须包含 dns_cloudflare_api_token = ...\n' >&2; exit 1; }
+    install_certbot
+    install_cloudflare_plugin
+    certbot certonly --dns-cloudflare --dns-cloudflare-credentials "$4" --dns-cloudflare-propagation-seconds 30 \
+      --non-interactive --agree-tos --email "$3" -d "$domain"
+    activate_renewal ;;
   status)
     [[ -f "$target/fullchain.pem" ]] || { printf '未找到该节点证书\n' >&2; exit 1; }
     validate "$target/fullchain.pem" "$target/privkey.pem"
     openssl x509 -in "$target/fullchain.pem" -enddate -noout ;;
-  *) printf '用法：ng-agent cert {issue 域名 邮箱|import 域名 证书 私钥|status 域名}\n' >&2; exit 1 ;;
+  *) printf '用法：ng-agent cert {issue 域名 邮箱|issue-cloudflare 域名 邮箱 /root/cloudflare.ini|import 域名 证书 私钥|status 域名}\n' >&2; exit 1 ;;
 esac
