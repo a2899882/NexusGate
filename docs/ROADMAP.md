@@ -20,18 +20,24 @@
 - Debian/Ubuntu/RHEL systemd 与 Alpine OpenRC Agent
 - 管理员账号密码修改、`ng` 完整运维菜单和冷备迁移流程
 
-## v0.4 — 订阅、诊断与 TLS（当前版本）
+## v0.4 — 订阅、诊断与 TLS（已完成）
 
 - Agent 心跳与 Xray 启动故障隔离；首次心跳验证、`ng-agent doctor`、部署前在线检查
 - 紧凑管理列表与本地二维码；Mihomo 智能分流和 Surge 兼容节点输出
 - VLESS WS TLS：节点域名、证书签发或导入、自动续签钩子和下发前验证
 
+## v0.6 — AnyTLS 双核心入口（测试阶段）
+
+- sing-box 独立服务及 `with_v2ray_api` 构建安装器
+- AnyTLS 直连、AnyTLS → VLESS TCP / SS2022 等转发及客户端订阅
+- TLS 证书校验与续签、独立双向计数和经认证来源 IP 观察
+- Xray 与 sing-box 分别下发及失败回滚，原资源保留
+
 ## 后续：节点协议、凭据和规模
 
 - 一设备一凭据、设备撤销与换机流程
 - 可编辑的自定义订阅模板
-- sing-box 引擎及 AnyTLS、Hysteria2 适配器
-- 让这些协议拥有可验证的实际来源 IP、流量上报与客户端兼容测试
+- Hysteria2 和 AnyTLS 的真实客户端兼容性与跨发行版压力测试
 - VLESS XHTTP/gRPC、Trojan、TUIC 等协议适配器
 - Xray/sing-box Release 校验和验证与分批升级
 - 控制面敏感字段静态加密

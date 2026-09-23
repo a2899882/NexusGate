@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+description="NexusGate managed sing-box AnyTLS core"
+command="/usr/local/bin/nexusgate-sing-box"
+command_args="run -c /etc/nexusgate/sing-box/config.json"
+command_background="yes"
+pidfile="/run/nexusgate-sing-box.pid"
+output_log="/var/log/nexusgate/sing-box-service.log"
+error_log="/var/log/nexusgate/sing-box-service-error.log"
+
+depend() {
+  need net
+}
+
+start_pre() {
+  checkpath --directory --mode 0750 /var/log/nexusgate
+}

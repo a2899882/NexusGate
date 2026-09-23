@@ -19,8 +19,10 @@ validate() {
 activate() {
   if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
     systemctl try-restart nexusgate-xray.service
+    systemctl try-restart nexusgate-sing-box.service
   elif command -v rc-service >/dev/null; then
     rc-service nexusgate-xray restart
+    rc-service nexusgate-sing-box status >/dev/null 2>&1 && rc-service nexusgate-sing-box restart || true
   fi
   printf '证书已安装：%s；有效期：' "$target"
   openssl x509 -in "$target/fullchain.pem" -enddate -noout
@@ -60,8 +62,10 @@ activate_renewal() {
 #!/usr/bin/env bash
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   systemctl try-restart nexusgate-xray.service
+  systemctl try-restart nexusgate-sing-box.service
 elif command -v rc-service >/dev/null; then
   rc-service nexusgate-xray restart
+  rc-service nexusgate-sing-box status >/dev/null 2>&1 && rc-service nexusgate-sing-box restart || true
 fi
 EOF
   chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh

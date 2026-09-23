@@ -109,7 +109,47 @@ test('Agent reads cumulative counters without resetting Xray', () => {
     const script = `process.stdout.write(JSON.stringify(require(${JSON.stringify(path.join(__dirname, '../agent/agent.js'))}).queryUsage()))`;
     const run = spawnSync(process.execPath, ['-e', script], { env:{ ...process.env, NG_CONFIG_DIR:dir, NG_XRAY_BIN:fakeXray }, encoding:'utf8' });
     assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(JSON.parse(run.stdout).samples, [{ resourceId:'entry', uplink:12, downlink:34 }]);
+    assert.deepEqual(JSON.parse(run.stdout).samples, [{ resourceId:'entry', uplink:12, downlink:34, epoch:'xray:unknown' }]);
     assert.doesNotMatch(fs.readFileSync(argumentsFile, 'utf8'), /reset/);
+  } finally { fs.rmSync(temp, { recursive:true, force:true }); }
+});
+
+test('sing-box config isolates AnyTLS from Xray and meters each entry once', () => {
+  const { combinedConfig, combinedSingBoxConfig } = require('../agent/agent');
+  const entry = { id:'entry', engine:'sing-box', meta:{ kind:'direct', customerId:'customer-a', metricsTag:'any-in' },
+    inbounds:[{ type:'anytls', tag:'any-in', listen:'0.0.0.0', listen_port:23000,
+      users:[{ name:'ng:customer-a', password:'secret' }], tls:{ enabled:true, server_name:'entry.example.com',
+        certificate_path:'/etc/nexusgate/tls/entry.example.com/fullchain.pem', key_path:'/etc/nexusgate/tls/entry.example.com/privkey.pem' } }],
+    outbounds:[{ type:'direct', tag:'any-direct' }], routingRules:[{ inbound:['any-in'], action:'route', outbound:'any-direct' }] };
+  const xray = combinedConfig([entry]);
+  assert.equal(xray.inbounds.length, 1);
+  const sing = combinedSingBoxConfig([entry]);
+  assert.equal(sing.inbounds[0].tag, 'any-in');
+  assert.deepEqual(sing.experimental.v2ray_api.stats.inbounds, ['any-in']);
+  assert.equal(sing.route.rules[0].outbound, 'any-direct');
+  assert.deepEqual(parseUsageStats(JSON.stringify({ stat:[
+    { name:'inbound>>>any-in>>>traffic>>>uplink', value:'10' },
+    { name:'inbound>>>any-in>>>traffic>>>downlink', value:'90' } ] }), [entry]),
+  [{ resourceId:'entry', uplink:10, downlink:90 }]);
+});
+
+test('AnyTLS IP observations require matching authenticated session and preserve partial lines', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexusgate-anytls-ip-'));
+  try {
+    const dir = path.join(temp, 'config');
+    fs.mkdirSync(path.join(dir, 'resources'), { recursive:true });
+    fs.writeFileSync(path.join(dir, 'resources', 'entry.json'), JSON.stringify({ id:'entry', engine:'sing-box',
+      meta:{ kind:'relay', metricsTag:'any-in', customerId:'customer-a' } }));
+    const file = path.join(temp, 'sing-box.log');
+    const source = '+0000 2026-09-23 18:00:00 INFO [31200 0ms] inbound/anytls[any-in]: inbound connection from 198.51.100.12:50000';
+    const authenticated = '+0000 2026-09-23 18:00:01 INFO [31200 1ms] inbound/anytls[any-in]: [ng:customer-a] inbound connection to example.com:443';
+    const wrongUser = '+0000 2026-09-23 18:00:02 INFO [31201 1ms] inbound/anytls[any-in]: [ng:other] inbound connection to example.com:443';
+    fs.writeFileSync(file, `${source}\n${authenticated}\n${wrongUser}\n${source.slice(0, 35)}`);
+    const script = `process.stdout.write(JSON.stringify(require(${JSON.stringify(path.join(__dirname, '../agent/agent.js'))}).readSingBoxObservations()))`;
+    const run = require('node:child_process').spawnSync(process.execPath, ['-e', script], { encoding:'utf8',
+      env:{ ...process.env, NG_CONFIG_DIR:dir, NG_SINGBOX_LOG:file, NG_SINGBOX_CURSOR:path.join(temp, 'cursor.json') } });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout), { observations:[{ customerId:'customer-a', ip:'198.51.100.12' }],
+      offset:Buffer.byteLength(`${source}\n${authenticated}\n${wrongUser}\n`) });
   } finally { fs.rmSync(temp, { recursive:true, force:true }); }
 });

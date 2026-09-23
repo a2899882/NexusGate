@@ -26,7 +26,33 @@ test('builds a VLESS Reality to Shadowsocks 2022 chain', () => {
 });
 
 test('rejects unsupported protocol pairs', () => {
-  assert.throws(() => validateProtocolPair('anytls', 'shadowsocks-2022-aes128'), /Unsupported relay ingress/);
+  assert.throws(() => validateProtocolPair('nonexistent', 'shadowsocks-2022-aes128'), /Unsupported relay ingress/);
+  assert.doesNotThrow(() => validateProtocolPair('anytls', 'vless-tcp'));
+});
+
+test('AnyTLS runs in sing-box with a separate TLS entry and VLESS or Shadowsocks exit', () => {
+  const { makeClash, makeSingBox, makeSurge } = require('../lib/subscriptions');
+  const credentials = newCredentialSet('anytls', 'vless-tcp');
+  assert.throws(() => buildDirectResource({ resourceId:'res_any_no_cert', tagPrefix:'any', port:23001,
+    protocol:'anytls', credentials, customer }), /证书域名/);
+  const relayResource = buildRelayResource({ resourceId:'res_any_relay', tagPrefix:'any', port:23001,
+    protocol:'anytls', exitProtocol:'vless-tcp', exitServer:exit, exitPort:32001,
+    credentials, customer, tlsDomain:'entry.example.com' });
+  assert.equal(relayResource.engine, 'sing-box');
+  assert.equal(relayResource.inbounds[0].type, 'anytls');
+  assert.equal(relayResource.inbounds[0].tls.certificate_path, '/etc/nexusgate/tls/entry.example.com/fullchain.pem');
+  assert.equal(relayResource.outbounds[0].type, 'vless');
+  assert.equal(relayResource.outbounds[0].uuid, credentials.clientId);
+  const direct = buildDirectResource({ resourceId:'res_any_direct', tagPrefix:'direct-any', port:23002,
+    protocol:'anytls', credentials, customer, tlsDomain:'entry.example.com' });
+  assert.equal(direct.outbounds[0].type, 'direct');
+  assert.equal(direct.routingRules[0].outbound, 'direct-any-direct');
+  const uri = buildClientUri({ protocol:'anytls', relayServer:relay, relayPort:23001,
+    credentials, tlsDomain:'entry.example.com', name:'AnyTLS 测试' });
+  assert.match(uri, /^anytls:\/\//);
+  assert.match(makeClash([{ clientUri:uri }]), /type: "anytls"/);
+  assert.match(makeSingBox([{ clientUri:uri }]), /"type": "anytls"/);
+  assert.equal(makeSurge([{ clientUri:uri }]), null);
 });
 
 test('Hysteria 2 reuses Xray route and emits importable Clash and sing-box credentials', () => {

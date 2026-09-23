@@ -19,7 +19,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.5.3';
+const VERSION = '0.6.0';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -283,7 +283,9 @@ async function handleAgent(req, res, pathname) {
         server.lastSeenAt = nowIso();
         server.system = body.system || server.system || {};
         server.engine = body.engine && ['ready','error'].includes(body.engine.status)
-          ? { status: body.engine.status, detail: redactSecrets(cleanText(body.engine.detail, 400)), at: nowIso() }
+          ? { status: body.engine.status, detail: redactSecrets(cleanText(body.engine.detail, 400)),
+            singBoxInstalled: body.engine.singBoxInstalled === true,
+            singBoxStatus: body.engine.singBoxStatus === 'ready' ? 'ready' : 'inactive', at: nowIso() }
           : server.engine || null;
       }
     });

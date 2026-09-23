@@ -1,0 +1,15 @@
+[Unit]
+Description=NexusGate managed sing-box AnyTLS core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/nexusgate-sing-box run -c /etc/nexusgate/sing-box/config.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

@@ -5,13 +5,17 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.5.2';
+const VERSION = '0.6.0';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
+const SINGBOX_BIN = process.env.NG_SINGBOX_BIN || '/usr/local/bin/nexusgate-sing-box';
 const ROOT = process.env.NG_CONFIG_DIR || '/etc/nexusgate/xray';
 const RESOURCE_DIR = path.join(ROOT, 'resources');
 const CONFIG_FILE = path.join(ROOT, 'config.json');
+const SINGBOX_CONFIG = process.env.NG_SINGBOX_CONFIG || '/etc/nexusgate/sing-box/config.json';
+const SINGBOX_LOG = process.env.NG_SINGBOX_LOG || '/var/log/nexusgate/sing-box-access.log';
+const SINGBOX_CURSOR = process.env.NG_SINGBOX_CURSOR || '/etc/nexusgate/sing-box-cursor.json';
 const KEY_FILE = process.env.NG_KEY_FILE || '/etc/nexusgate/keys.json';
 const ACCESS_LOG = process.env.NG_XRAY_ACCESS_LOG || '/var/log/nexusgate/xray-access.log';
 const CURSOR_FILE = process.env.NG_ACCESS_CURSOR || '/etc/nexusgate/access-cursor.json';
@@ -101,11 +105,24 @@ function combinedConfig(resources) {
     routing: { domainStrategy: 'AsIs', rules: [{ type: 'field', inboundTag: ['api-in'], outboundTag: 'api' }] }
   };
   for (const resource of resources) {
+    if (resource.engine === 'sing-box') continue;
     config.inbounds.push(...(resource.inbounds || []));
     config.outbounds.push(...(resource.outbounds || []));
     config.routing.rules.push(...(resource.routingRules || []));
   }
   return config;
+}
+
+function combinedSingBoxConfig(resources) {
+  const selected = resources.filter((item) => item.engine === 'sing-box');
+  return {
+    log: { level: 'info', output: SINGBOX_LOG, timestamp: true },
+    inbounds: selected.flatMap((item) => item.inbounds || []),
+    outbounds: [{ type: 'direct', tag: 'ng-fallback-direct' }, ...selected.flatMap((item) => item.outbounds || [])],
+    route: { rules: selected.flatMap((item) => item.routingRules || []), final: 'ng-fallback-direct' },
+    experimental: { v2ray_api: { listen: `127.0.0.1:${process.env.NG_SINGBOX_API_PORT || 10086}`,
+      stats: { enabled: true, inbounds: selected.flatMap((item) => item.inbounds || []).map((item) => item.tag) } } }
+  };
 }
 
 function run(command, args, timeout = 30000) {
@@ -118,6 +135,42 @@ function restartXray() {
   if (fs.existsSync('/run/systemd/system')) return run('systemctl', ['restart', 'nexusgate-xray.service']);
   return run('rc-service', ['nexusgate-xray', 'restart']);
 }
+
+function serviceCommand(action, service) {
+  if (fs.existsSync('/run/systemd/system')) return run('systemctl', [action, `${service}.service`]);
+  return run('rc-service', [service, action]);
+}
+
+function activateSingBox() {
+  const resources = readResources().filter((item) => item.engine === 'sing-box');
+  if (!resources.length) {
+    if (fs.existsSync(SINGBOX_CONFIG)) {
+      serviceCommand('stop', 'nexusgate-sing-box');
+      fs.rmSync(SINGBOX_CONFIG, { force: true });
+    }
+    return;
+  }
+  if (!fs.existsSync(SINGBOX_BIN)) throw new Error('sing-box 未安装；请在入口机器运行 ng-agent engine install');
+  const candidate = `${SINGBOX_CONFIG}.candidate.json`;
+  const previous = `${SINGBOX_CONFIG}.previous`;
+  const next = `${JSON.stringify(combinedSingBoxConfig(resources), null, 2)}\n`;
+  if (fs.existsSync(SINGBOX_CONFIG) && fs.readFileSync(SINGBOX_CONFIG, 'utf8') === next && serviceHealth('nexusgate-sing-box').status === 'ready') return;
+  fs.mkdirSync(path.dirname(SINGBOX_CONFIG), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(candidate, next, { mode: 0o600 });
+  try { run(SINGBOX_BIN, ['check', '-c', candidate]); }
+  catch (error) { fs.rmSync(candidate, { force: true }); throw error; }
+  if (fs.existsSync(SINGBOX_CONFIG)) fs.copyFileSync(SINGBOX_CONFIG, previous);
+  fs.renameSync(candidate, SINGBOX_CONFIG);
+  try { serviceCommand('restart', 'nexusgate-sing-box'); }
+  catch (error) {
+    if (fs.existsSync(previous)) fs.copyFileSync(previous, SINGBOX_CONFIG);
+    else fs.rmSync(SINGBOX_CONFIG, { force: true });
+    if (fs.existsSync(SINGBOX_CONFIG)) { try { serviceCommand('restart', 'nexusgate-sing-box'); } catch { /* preserve original error */ } }
+    throw error;
+  }
+}
+
+function activateResourceEngine(engine) { return engine === 'sing-box' ? activateSingBox() : activateConfig(); }
 
 function activateConfig() {
   // Xray detects JSON from the file extension; a .candidate suffix is rejected.
@@ -152,12 +205,16 @@ function applyResource(payload) {
   if (!payload || !payload.resource || !payload.resource.id) throw new Error('Missing resource payload');
   const artifacts = {};
   const resource = materialize(payload.resource, artifacts);
+  if (resource.engine && resource.engine !== 'sing-box') throw new Error(`Unsupported engine: ${resource.engine}`);
   for (const inbound of resource.inbounds || []) {
-    const tls = inbound.streamSettings && inbound.streamSettings.tlsSettings;
+    const tls = resource.engine === 'sing-box' ? inbound.tls : inbound.streamSettings && inbound.streamSettings.tlsSettings;
     if (!tls) continue;
-    const domain = tls.serverName;
+    const domain = resource.engine === 'sing-box' ? tls.server_name : tls.serverName;
+    if (!/^(?:[a-z0-9-]+\.)+[a-z]{2,63}$/.test(domain || '')) throw new Error('TLS 域名无效');
     const expected = `/etc/nexusgate/tls/${domain}/`;
-    for (const cert of tls.certificates || []) {
+    const certs = resource.engine === 'sing-box'
+      ? [{ certificateFile: tls.certificate_path, keyFile: tls.key_path }] : tls.certificates || [];
+    for (const cert of certs) {
       if (!cert.certificateFile.startsWith(expected) || !cert.keyFile.startsWith(expected) ||
           !fs.existsSync(cert.certificateFile) || !fs.existsSync(cert.keyFile)) {
         throw new Error(`TLS certificate for ${domain} is missing; run ng-agent cert issue ${domain} EMAIL or ng-agent cert import`);
@@ -169,10 +226,20 @@ function applyResource(payload) {
   }
   const target = safeResourcePath(resource.id);
   const backup = fs.existsSync(target) ? fs.readFileSync(target) : null;
+  const oldEngine = backup ? JSON.parse(backup).engine || 'xray' : null;
+  const newEngine = resource.engine || 'xray';
   fs.writeFileSync(target, `${JSON.stringify(resource, null, 2)}\n`, { mode: 0o600 });
-  try { activateConfig(); lastEngineError = ''; }
+  try {
+    activateResourceEngine(newEngine);
+    if (oldEngine !== newEngine && oldEngine) activateResourceEngine(oldEngine);
+    lastEngineError = '';
+  }
   catch (error) {
     if (backup) fs.writeFileSync(target, backup, { mode: 0o600 }); else fs.rmSync(target, { force: true });
+    try { activateResourceEngine(newEngine); } catch { /* preserve original error */ }
+    if (oldEngine && oldEngine !== newEngine) {
+      try { activateResourceEngine(oldEngine); } catch { /* preserve original error */ }
+    }
     throw error;
   }
   return { artifacts };
@@ -182,8 +249,9 @@ function deleteResource(payload) {
   const target = safeResourcePath(payload.resourceId);
   if (!fs.existsSync(target)) return { alreadyAbsent: true };
   const backup = fs.readFileSync(target);
+  const engine = JSON.parse(backup).engine;
   fs.rmSync(target);
-  try { activateConfig(); }
+  try { activateResourceEngine(engine); }
   catch (error) { fs.writeFileSync(target, backup, { mode: 0o600 }); throw error; }
   return { removed: true };
 }
@@ -214,9 +282,20 @@ function systemInfo() {
 }
 
 function engineHealth() {
+  const xray = serviceHealth('nexusgate-xray');
+  xray.singBoxInstalled = fs.existsSync(SINGBOX_BIN);
+  if (readResources().some((item) => item.engine === 'sing-box')) {
+    const singbox = serviceHealth('nexusgate-sing-box');
+    xray.singBoxStatus = singbox.status;
+    if (singbox.status !== 'ready') return { ...xray, status: 'error', detail: `sing-box: ${singbox.detail}` };
+  }
+  return xray;
+}
+
+function serviceHealth(service) {
   const result = fs.existsSync('/run/systemd/system')
-    ? spawnSync('systemctl', ['is-active', 'nexusgate-xray.service'], { encoding:'utf8', timeout:3000 })
-    : spawnSync('rc-service', ['nexusgate-xray', 'status'], { encoding:'utf8', timeout:3000 });
+    ? spawnSync('systemctl', ['is-active', `${service}.service`], { encoding:'utf8', timeout:3000 })
+    : spawnSync('rc-service', [service, 'status'], { encoding:'utf8', timeout:3000 });
   return { status: result.status === 0 ? 'ready' : 'error', detail: (result.status === 0 ? result.stdout : lastEngineError || result.stderr || result.stdout || '').trim().slice(0, 400) };
 }
 
@@ -242,13 +321,13 @@ function parseUsageStats(output, resources) {
   });
 }
 
-function xrayEpoch() {
+function serviceEpoch(service = 'nexusgate-xray') {
   let pid;
   if (fs.existsSync('/run/systemd/system')) {
-    const result = spawnSync('systemctl', ['show', '-p', 'MainPID', '--value', 'nexusgate-xray.service'], { encoding:'utf8', timeout:3000 });
+    const result = spawnSync('systemctl', ['show', '-p', 'MainPID', '--value', `${service}.service`], { encoding:'utf8', timeout:3000 });
     if (result.status === 0) pid = Number(result.stdout.trim());
   } else {
-    try { pid = Number(fs.readFileSync('/run/nexusgate-xray.pid', 'utf8').trim()); } catch { /* service is not running */ }
+    try { pid = Number(fs.readFileSync(`/run/${service}.pid`, 'utf8').trim()); } catch { /* service is not running */ }
   }
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
@@ -263,15 +342,59 @@ function queryUsage() {
   // Count client ingress once; counting the exit as well doubles forwarded traffic.
   const resources = readResources().filter((resource) => resource.meta && resource.meta.metricsTag &&
     ['relay', 'direct'].includes(resource.meta.kind));
-  if (!resources.length) return { samples: [], error: null, epoch: xrayEpoch() };
-  const before = xrayEpoch();
-  const result = spawnSync(XRAY_BIN, ['api', 'statsquery', `--server=127.0.0.1:${process.env.NG_XRAY_API_PORT || 10085}`, '-pattern', 'inbound>>>'],
-    { encoding: 'utf8', timeout: 15000 });
-  const after = xrayEpoch();
-  if (before && after && before !== after) throw new Error('Xray restarted during statistics query; retry on next cycle');
-  if (result.status !== 0) throw new Error(`Xray statsquery failed: ${safeError(result.stderr || result.error?.message || result.stdout).slice(0, 220)}`);
-  const samples = parseUsageStats(result.stdout, resources);
-  return { samples, epoch: before || after, error: samples.length ? null : '入口尚无 Xray 统计记录；若已实际使用，请检查节点是否连到本机 Xray' };
+  const samples = [], errors = [];
+  for (const engine of ['xray', 'sing-box']) {
+    const selected = resources.filter((item) => (item.engine || 'xray') === engine);
+    if (!selected.length) continue;
+    const service = engine === 'xray' ? 'nexusgate-xray' : 'nexusgate-sing-box';
+    const before = serviceEpoch(service);
+    const port = engine === 'xray' ? (process.env.NG_XRAY_API_PORT || 10085) : (process.env.NG_SINGBOX_API_PORT || 10086);
+    const result = spawnSync(XRAY_BIN, ['api', 'statsquery', `--server=127.0.0.1:${port}`, '-pattern', 'inbound>>>'],
+      { encoding: 'utf8', timeout: 15000 });
+    const after = serviceEpoch(service);
+    if (before && after && before !== after) { errors.push(`${engine} restarted during statistics query`); continue; }
+    if (result.status !== 0) { errors.push(`${engine} statsquery failed: ${safeError(result.stderr || result.error?.message || result.stdout).slice(0, 160)}`); continue; }
+    try {
+      const parsed = parseUsageStats(result.stdout, selected);
+      samples.push(...parsed.map((item) => ({ ...item, epoch: `${engine}:${before || after || 'unknown'}` })));
+      if (!parsed.length) errors.push(`${engine} 入口尚无统计记录`);
+    } catch (error) { errors.push(safeError(error.message)); }
+  }
+  return { samples, error: errors.join('; ') || null };
+}
+
+function readSingBoxObservations() {
+  if (!fs.existsSync(SINGBOX_LOG)) return { observations: [], offset: null };
+  let cursor = { offset: 0 };
+  try { cursor = JSON.parse(fs.readFileSync(SINGBOX_CURSOR, 'utf8')); } catch { /* first read */ }
+  const size = fs.statSync(SINGBOX_LOG).size;
+  if (size < cursor.offset) cursor.offset = 0;
+  const start = Math.max(cursor.offset, size - 2 * 1024 * 1024);
+  if (start >= size) return { observations: [], offset: null };
+  const buffer = Buffer.alloc(size - start);
+  const fd = fs.openSync(SINGBOX_LOG, 'r');
+  try { fs.readSync(fd, buffer, 0, buffer.length, start); } finally { fs.closeSync(fd); }
+  const end = buffer.lastIndexOf(10);
+  if (end < 0) return { observations: [], offset: null };
+  const tagCustomers = new Map(readResources().filter((item) => item.engine === 'sing-box' &&
+    ['relay', 'direct'].includes(item.meta?.kind)).map((item) => [item.meta.metricsTag, item.meta.customerId]));
+  const sourceById = new Map(), unique = new Map();
+  for (const line of buffer.subarray(0, end).toString('utf8').split('\n')) {
+    const context = line.match(/\[(\d+)\s+\d+ms\]\s+inbound\/anytls\[([^\]]+)\]:\s+(.*)$/);
+    if (!context || !tagCustomers.has(context[2])) continue;
+    const key = `${context[2]}:${context[1]}`;
+    const source = context[3].match(/inbound connection from\s+(\[[^\]]+\]|[\d.]+):\d+/);
+    if (source) sourceById.set(key, source[1].replace(/^\[|\]$/g, ''));
+    // Only count authenticated AnyTLS sessions, never unauthenticated port probes.
+    if (/\[ng:[^\]]+\] inbound connection to /.test(context[3]) && sourceById.has(key)) {
+      const customerId = tagCustomers.get(context[2]);
+      if (context[3].includes(`[ng:${customerId}]`)) {
+        const ip = sourceById.get(key);
+        unique.set(`${customerId}|${ip}`, { customerId, ip });
+      }
+    }
+  }
+  return { observations: [...unique.values()], offset: start + end + 1 };
 }
 
 function readObservations() {
@@ -320,6 +443,9 @@ async function usageLoop() {
       if (observations.length) await request('/api/agent/observations', { method: 'POST', body: JSON.stringify({ observations }) });
       // A failed upload must not advance the cursor; retry the same log lines next cycle.
       if (offset !== null) fs.writeFileSync(CURSOR_FILE, `${JSON.stringify({ offset })}\n`, { mode: 0o600 });
+      const sing = readSingBoxObservations();
+      if (sing.observations.length) await request('/api/agent/observations', { method: 'POST', body: JSON.stringify({ observations: sing.observations }) });
+      if (sing.offset !== null) fs.writeFileSync(SINGBOX_CURSOR, `${JSON.stringify({ offset: sing.offset })}\n`, { mode: 0o600 });
     } catch (error) { log('IP observation report failed', safeError(error.message)); }
   }
 }
@@ -341,6 +467,7 @@ async function main() {
   // Keep the control channel alive even when a stale node configuration cannot start.
   // The administrator can then see the engine error and a repair job can be claimed.
   try { activateConfig(); } catch (error) { lastEngineError = safeError(error.message); log('Initial Xray activation failed', lastEngineError); }
+  try { activateSingBox(); } catch (error) { lastEngineError = safeError(error.message); log('Initial sing-box activation failed', lastEngineError); }
   try { await heartbeat(); } catch (error) { log('Initial heartbeat failed', error.message); }
   setInterval(() => heartbeat().catch((error) => log('Heartbeat failed', error.message)), 30000).unref();
   usageLoop();
@@ -349,4 +476,5 @@ async function main() {
 
 if (require.main === module) main().catch((error) => { console.error(error); process.exit(1); });
 
-module.exports = { parseX25519, activateConfig, combinedConfig, applyResource, readObservations, parseUsageStats, queryUsage };
+module.exports = { parseX25519, activateConfig, activateSingBox, combinedConfig, combinedSingBoxConfig, applyResource,
+  readObservations, readSingBoxObservations, parseUsageStats, queryUsage };

@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.5.3'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.0'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -262,7 +262,7 @@ function customerForm(item = null) {
 }
 
 function protocolOptions(role, current) {
-  return state.protocols.filter((item) => item.role === role && item.deployable).map((item) => `<option value="${esc(item.id)}"${selected(item.id,current)}>${esc(item.name)}${item.status === 'beta' ? ' · 兼容模式' : ''}</option>`).join('');
+  return state.protocols.filter((item) => item.role === role && item.deployable).map((item) => `<option value="${esc(item.id)}"${selected(item.id,current)}>${esc(item.name)}${item.status === 'beta' ? ' · 测试' : ''}</option>`).join('');
 }
 
 function multiPicker(name, items, values, subtitle, emptyLabel) {
@@ -316,7 +316,7 @@ function chainForm(item = null) {
     <label data-forward-only>出口端口<div class="inline-fields"><select name="exitPortMode" data-chain-sync><option value="random"${selected('random',chain.exitPortMode)}>范围内随机</option><option value="fixed"${selected('fixed',chain.exitPortMode)}>固定端口</option></select><input name="exitPort" type="number" value="${esc(chain.exitPort || '')}" placeholder="固定时填写" min="1024" max="65535"></div></label>
     <div class="section-title">客户分配</div>
     <div class="wide picker-field"><span>客户</span>${multiPicker('customerIds',state.customers.filter((customer) => customer.status === 'active' || (chain.customerIds || []).includes(customer.id)),chain.customerIds,(customer) => `${customer.group || '未分组'}${customer.status !== 'active' ? ' · 已停用' : ''}`,'客户')}<small>批量选择多个客户时请使用随机端口。</small></div>
-    <div class="notice wide">VLESS WS TLS 与 Hysteria 2 需要入口设备的有效证书。Hysteria 2 使用 UDP，请放行入口端口。先在设备填写 TLS 域名，再用 ng-agent cert issue 或 issue-cloudflare 申请证书。AnyTLS 可与现有 Xray 出口共存，但本版未接入 sing-box 服务和独立计量，暂不提供部署。</div>
+    <div class="notice wide">VLESS WS TLS、Hysteria 2 和 AnyTLS 都需要入口设备的有效证书。Hysteria 2 使用 UDP，其余使用 TCP。先填写节点 TLS 域名并运行 ng-agent cert issue 或 issue-cloudflare；AnyTLS 还需要在入口运行 ng-agent engine install，单独由 sing-box 承载，出口协议可选 VLESS TCP 等现有选项。</div>
     ${item && !['draft'].includes(item.status) ? '<div class="notice warning wide">保存运行中线路只会标记“待重新部署”，不会立即中断服务。确认后再点击“应用修改”。</div>' : ''}
     <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '创建线路'}</button></div></form>`);
   syncChainForm();

@@ -1,6 +1,6 @@
 {
   "name": "nexusgate",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "private": true,
   "description": "Lightweight multi-relay, multi-exit proxy orchestration control plane",
   "type": "commonjs",

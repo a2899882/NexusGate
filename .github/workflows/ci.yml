@@ -22,3 +22,25 @@ jobs:
       - run: npm test
       - name: Shell syntax
         run: bash -n scripts/*.sh
+  anytls-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.1'
+      - name: Build sing-box with statistics API
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          GOBIN="$RUNNER_TEMP/bin" GOMAXPROCS=2 go install -p 2 -tags with_v2ray_api github.com/sagernet/sing-box/cmd/sing-box@v1.12.23
+      - name: Download Xray query client
+        run: |
+          curl -fL --retry 3 https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o "$RUNNER_TEMP/xray.zip"
+          unzip -q "$RUNNER_TEMP/xray.zip" xray -d "$RUNNER_TEMP/bin"
+          chmod +x "$RUNNER_TEMP/bin/xray"
+      - name: AnyTLS handshake and two-way traffic counters
+        run: |
+          NG_SINGBOX_BIN="$RUNNER_TEMP/bin/sing-box" NG_XRAY_BIN="$RUNNER_TEMP/bin/xray" bash scripts/anytls-smoke.sh

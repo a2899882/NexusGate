@@ -68,11 +68,12 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   }
   await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[relay.id]}`, 'content-type':'application/json' },
     body:JSON.stringify({ version:'0.4.0', engine:{ status:'error', detail:'Xray config validation failed' } }) });
+  // A broken core can be repaired by applying a new resource; keep the Agent job queue available.
   const engineBlocked = await fetch(`${base}/api/chains/${chain.id}/deploy`, { method:'POST', headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:'{}' });
-  assert.equal(engineBlocked.status, 409);
+  assert.equal(engineBlocked.status, 202);
+  const deployed = await engineBlocked.json();
   await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[relay.id]}`, 'content-type':'application/json' },
     body:JSON.stringify({ version:'0.4.0', engine:{ status:'ready', detail:'active' } }) });
-  const deployed = await request(`/api/chains/${chain.id}/deploy`, 'POST', {});
   assert.equal(deployed.deployments.length, 2);
   const jobs = await request('/api/jobs');
   assert.equal(jobs.jobs.length, 2);
@@ -243,6 +244,39 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.equal((await completeNext(agentKeys[exit.id])).action, 'apply_resource');
   assert.equal((await request('/api/chains')).deployments.find((item) => item.id === forwardEntry.id).clientUri, forwardUri);
   assert.equal((await fetch(`${base}/s/${customerC.subscriptionToken}/raw`)).status, 200);
+
+  // AnyTLS is a separate entry engine, but follows the same quota and restore lifecycle.
+  await request(`/api/servers/${relay.id}`, 'PATCH', { tlsDomain:'entry.example.com' });
+  const anyCustomer = (await request('/api/customers', 'POST', { name:'AnyTLS 客户', trafficLimitBytes:500 })).customer;
+  const anyChain = (await request('/api/chains', 'POST', { name:'AnyTLS → VLESS', relayServerIds:[relay.id], exitServerId:exit.id,
+    customerIds:[anyCustomer.id], relayProtocol:'anytls', exitProtocol:'vless-tcp' })).chain;
+  const oldAgent = await fetch(`${base}/api/chains/${anyChain.id}/deploy`, { method:'POST',
+    headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:'{}' });
+  assert.equal(oldAgent.status, 409);
+  await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
+    body:JSON.stringify({ version:'0.6.0', engine:{ status:'ready', singBoxInstalled:true } }) });
+  const anyDeploy = (await request(`/api/chains/${anyChain.id}/deploy`, 'POST', {})).deployments;
+  const anyExitJob = await completeNext(agentKeys[exit.id]);
+  assert.equal(anyExitJob.payload.resource.inbounds[0].protocol, 'vless');
+  const anyEntryJob = await completeNext(agentKey);
+  assert.equal(anyEntryJob.payload.resource.engine, 'sing-box');
+  assert.equal(anyEntryJob.payload.resource.outbounds[0].type, 'vless');
+  const anyEntry = anyDeploy.find((item) => item.role === 'relay');
+  const anyUri = (await request('/api/chains')).deployments.find((item) => item.id === anyEntry.id).clientUri;
+  assert.match(anyUri, /^anytls:\/\//);
+  assert.match(await (await fetch(`${base}/s/${anyCustomer.subscriptionToken}/clash`)).text(), /type: "anytls"/);
+  const anyUsage = await fetch(`${base}/api/agent/usage`, { method:'POST',
+    headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
+    body:JSON.stringify({ samples:[{ resourceId:anyEntry.resourceId, uplink:120, downlink:400, epoch:'sing-box:123:456' }] }) });
+  assert.equal(anyUsage.status, 200);
+  await request(`/api/customers/${anyCustomer.id}`, 'PATCH', { trafficLimitBytes:500 });
+  assert.equal((await completeNext(agentKeys[exit.id])).action, 'delete_resource');
+  assert.equal((await completeNext(agentKey)).action, 'delete_resource');
+  assert.equal((await fetch(`${base}/s/${anyCustomer.subscriptionToken}/raw`)).status, 403);
+  await request(`/api/customers/${anyCustomer.id}`, 'PATCH', { trafficLimitBytes:1000 });
+  assert.equal((await completeNext(agentKey)).payload.resource.engine, 'sing-box');
+  assert.equal((await completeNext(agentKeys[exit.id])).action, 'apply_resource');
+  assert.equal((await request('/api/chains')).deployments.find((item) => item.id === anyEntry.id).clientUri, anyUri);
 
   // Exit-server source addresses belong to relay machines, never to client IP quota.
   await fetch(`${base}/api/agent/observations`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[exit.id]}`, 'content-type':'application/json' },

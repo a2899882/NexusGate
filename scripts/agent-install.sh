@@ -57,6 +57,7 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-uninstall.sh" -o /usr/local/sbin/ng-agent-uninstall
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-doctor.sh" -o /usr/local/sbin/ng-agent-doctor
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-cert.sh" -o /usr/local/sbin/ng-agent-cert
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-singbox.sh" -o /usr/local/sbin/ng-agent-singbox
 cat > /usr/local/sbin/ng-agent <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -65,12 +66,13 @@ case "${1:-}" in
   uninstall) shift; exec ng-agent-uninstall "$@" ;;
   doctor|status) exec ng-agent-doctor ;;
   cert) shift; exec ng-agent-cert "$@" ;;
-  *) printf 'NexusGate Agent: ng-agent doctor | ng-agent cert | ng-agent update | ng-agent uninstall\n' ;;
+  engine) shift; exec ng-agent-singbox "$@" ;;
+  *) printf 'NexusGate Agent: ng-agent doctor | ng-agent cert | ng-agent engine install | ng-agent update | ng-agent uninstall\n' ;;
 esac
 EOF
 chmod 0644 /opt/nexusgate-agent/agent.js
-chmod 0755 /opt/nexusgate-agent/run.sh /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall /usr/local/sbin/ng-agent-doctor /usr/local/sbin/ng-agent-cert /usr/local/sbin/ng-agent
-install -d -m 0700 /etc/nexusgate /etc/nexusgate/xray /etc/nexusgate/xray/resources
+chmod 0755 /opt/nexusgate-agent/run.sh /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall /usr/local/sbin/ng-agent-doctor /usr/local/sbin/ng-agent-cert /usr/local/sbin/ng-agent-singbox /usr/local/sbin/ng-agent
+install -d -m 0700 /etc/nexusgate /etc/nexusgate/xray /etc/nexusgate/xray/resources /etc/nexusgate/sing-box
 install -d -m 0750 /var/log/nexusgate
 if [[ ! -f /etc/nexusgate/xray/config.json ]]; then
   printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[]}\n' > /etc/nexusgate/xray/config.json
@@ -78,7 +80,7 @@ fi
 chmod 0600 /etc/nexusgate/xray/config.json
 
 info "向控制面注册"
-enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.5.2",system:{platform:process.platform,arch:process.arch}}))')"
+enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.0",system:{platform:process.platform,arch:process.arch}}))')"
 response="$(curl -fsS -H 'content-type: application/json' --data "$enroll_json" "${CONTROLLER%/}/api/agent/enroll")" || die "注册失败，请检查地址和令牌"
 agent_key="$(RESPONSE_VALUE="$response" node -e 'const r=JSON.parse(process.env.RESPONSE_VALUE); if(!r.agentKey) process.exit(1); process.stdout.write(r.agentKey)')" || die "控制面返回无效"
 
@@ -94,6 +96,7 @@ chmod 0600 /etc/nexusgate/agent.env
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/systemd/nexusgate-agent.service" -o /etc/systemd/system/nexusgate-agent.service
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/systemd/nexusgate-xray.service" -o /etc/systemd/system/nexusgate-xray.service
+  curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/systemd/nexusgate-sing-box.service" -o /etc/systemd/system/nexusgate-sing-box.service
   systemctl daemon-reload
   systemctl enable nexusgate-xray.service nexusgate-agent.service
   systemctl restart nexusgate-xray.service
@@ -104,7 +107,8 @@ elif command -v rc-service >/dev/null; then
   install -d -m 0755 /etc/init.d
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/openrc/nexusgate-agent" -o /etc/init.d/nexusgate-agent
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/openrc/nexusgate-xray" -o /etc/init.d/nexusgate-xray
-  chmod 0755 /etc/init.d/nexusgate-agent /etc/init.d/nexusgate-xray
+  curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/openrc/nexusgate-sing-box" -o /etc/init.d/nexusgate-sing-box
+  chmod 0755 /etc/init.d/nexusgate-agent /etc/init.d/nexusgate-xray /etc/init.d/nexusgate-sing-box
   rc-update add nexusgate-xray default >/dev/null
   rc-update add nexusgate-agent default >/dev/null
   rc-service nexusgate-xray restart
@@ -126,6 +130,9 @@ printf '\n\033[1;32mAgent 安装、注册和首次心跳完成（%s）。\033[0m
 printf '后续更新 Agent：ng-agent-update\n'
 printf '卸载 Agent：ng-agent uninstall\n'
 printf '检查 Agent 与 Xray：ng-agent doctor\n'
+if ! ng-agent-singbox install; then
+  info 'sing-box 构建未完成；Xray 节点可正常使用。请检查网络与 Go 后运行 ng-agent engine install，再部署 AnyTLS。'
+fi
 if [[ "$service_manager" == systemd ]] && ! systemctl is-active --quiet nexusgate-agent.service; then
   journalctl -u nexusgate-agent.service -n 35 --no-pager || true
   die 'Agent 注册已完成，但服务没有运行；请执行 ng-agent doctor 检查原因'
