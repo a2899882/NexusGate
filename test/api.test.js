@@ -57,6 +57,21 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   const editedCustomer = (await request(`/api/customers/${customer.id}`, 'PATCH', { expiresAt: '2030-12-31T23:59:00+08:00', tags: ['VIP'] })).customer;
   assert.equal(editedCustomer.expiresAt, '2030-12-31T15:59:00.000Z');
   const chain = (await request('/api/chains', 'POST', { name: 'SG → JP', relayServerIds: [relay.id], exitServerId: exit.id, customerIds: [customer.id], relayProtocol: 'vless-reality-vision', exitProtocol: 'shadowsocks-2022-aes128' })).chain;
+  const premature = await fetch(`${base}/api/chains/${chain.id}/deploy`, { method:'POST', headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:'{}' });
+  assert.equal(premature.status, 409);
+  const agentKeys = {};
+  for (const server of [relay, exit]) {
+    const ticket = await request(`/api/servers/${server.id}/enrollment-token`, 'POST', {});
+    const response = await fetch(`${base}/api/agent/enroll`, { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ token:ticket.token, hostname:'test-agent' }) });
+    assert.equal(response.status, 201);
+    agentKeys[server.id] = (await response.json()).agentKey;
+  }
+  await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[relay.id]}`, 'content-type':'application/json' },
+    body:JSON.stringify({ version:'0.4.0', engine:{ status:'error', detail:'Xray config validation failed' } }) });
+  const engineBlocked = await fetch(`${base}/api/chains/${chain.id}/deploy`, { method:'POST', headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:'{}' });
+  assert.equal(engineBlocked.status, 409);
+  await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[relay.id]}`, 'content-type':'application/json' },
+    body:JSON.stringify({ version:'0.4.0', engine:{ status:'ready', detail:'active' } }) });
   const deployed = await request(`/api/chains/${chain.id}/deploy`, 'POST', {});
   assert.equal(deployed.deployments.length, 2);
   const jobs = await request('/api/jobs');
@@ -93,6 +108,10 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   const clashText = await clash.text();
   assert.match(clashText, /^  - name: /m);
   assert.match(clashText, /^    type: "ss"$/m);
+  const smart = await fetch(`${base}/s/${customerB.subscriptionToken}/clash-smart`);
+  assert.match(await smart.text(), /GEOSITE,category-ads-all,REJECT/);
+  const surge = await fetch(`${base}/s/${customerB.subscriptionToken}/surge`);
+  assert.match(await surge.text(), /\[Proxy Group\]/);
   const singbox = await fetch(`${base}/s/${customerB.subscriptionToken}/singbox`);
   assert.equal((await singbox.json()).outbounds[1].type, 'shadowsocks');
   const rotated = (await request(`/api/customers/${customerB.id}/rotate-subscription`, 'POST', {})).customer;
@@ -117,9 +136,8 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.equal(blocked.status, 409);
   const retry = await request(`/api/servers/${exit.id}/cleanup`, 'POST', {});
   assert.equal(retry.queued, 0);
-  const forgotten = await request(`/api/servers/${exit.id}/forget`, 'POST', { confirm:'FORGET', name:'落地 01' });
-  assert.equal(forgotten.unconfirmedResources, 1);
-  assert.equal((await request('/api/servers')).servers.some((item) => item.id === exit.id), false);
+  const unsafeForget = await fetch(`${base}/api/servers/${exit.id}/forget`, { method:'POST', headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:JSON.stringify({ confirm:'FORGET', name:'落地 01' }) });
+  assert.equal(unsafeForget.status, 409);
   const renamed = await request('/api/account', 'PATCH', { username:'owner_2', currentPassword:'test-password', newPassword:'new-password-456' });
   assert.equal(renamed.reauthenticate, true);
   const relogin = await fetch(`${base}/api/auth/login`, { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ username:'owner_2', password:'new-password-456' }) });

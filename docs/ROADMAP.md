@@ -9,7 +9,7 @@
 - 流量、到期和滚动 IP 限制
 - 一键安装、Agent 注册、备份恢复与自动 HTTPS
 
-## v0.2 — 统一维护与容灾（当前版本）
+## v0.2 — 统一维护与容灾（已完成）
 
 - 默认明亮/暗色双主题与重新设计的中文 UI
 - 设备、客户、线路编辑和运行中线路安全重建
@@ -20,17 +20,21 @@
 - Debian/Ubuntu/RHEL systemd 与 Alpine OpenRC Agent
 - 管理员账号密码修改、`ng` 完整运维菜单和冷备迁移流程
 
-## v0.3 — 订阅与协议引擎
+## v0.4 — 订阅、诊断与 TLS（当前版本）
+
+- Agent 心跳与 Xray 启动故障隔离；首次心跳验证、`ng-agent doctor`、部署前在线检查
+- 紧凑管理列表与本地二维码；Mihomo 智能分流和 Surge 兼容节点输出
+- VLESS WS TLS：节点域名、证书签发或导入、自动续签钩子和下发前验证
+
+## 后续：节点协议、凭据和规模
 
 - 一设备一凭据、设备撤销与换机流程
-- Surge 输出模板、自定义订阅模板和本地生成的二维码（Base64、Clash/Mihomo、sing-box JSON 已提供）
+- 可编辑的自定义订阅模板
 - sing-box 引擎及 AnyTLS、Hysteria2 适配器
-- 节点域名/证书资产管理及 VLESS WS TLS
+- 让这些协议拥有可验证的实际来源 IP、流量上报与客户端兼容测试
 - VLESS XHTTP/gRPC、Trojan、TUIC 等协议适配器
 - Xray/sing-box Release 校验和验证与分批升级
 - 控制面敏感字段静态加密
-
-## v0.4 — 调度与规模
 
 - 出口池、延迟/可用性探测、加权分流与故障转移
 - PostgreSQL 存储、分页、批量标签和批量策略

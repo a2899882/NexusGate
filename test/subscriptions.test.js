@@ -26,3 +26,17 @@ test('formats active Reality and Shadowsocks entries, excluding exit and incompl
   assert.equal(formatSubscription(data, customer, 'auto', 'Other').contentType, 'text/plain; charset=utf-8');
   assert.doesNotMatch(formatSubscription(data, customer, 'raw').body, /should-not-export/);
 });
+
+test('TLS WebSocket exports valid Mihomo and sing-box TLS settings', () => {
+  const customer = { id:'cus-tls' };
+  const data = { deployments:[{ customerId:customer.id, role:'direct', status:'active', clientUri:
+    'vless://00000000-0000-4000-8000-000000000001@node.example.com:24444?encryption=none&security=tls&sni=node.example.com&type=ws&path=%2Ftest#TLS' }] };
+  const proxy = clashProxy(data.deployments[0]);
+  assert.equal(proxy.tls, true);
+  assert.equal(proxy.servername, 'node.example.com');
+  assert.equal(proxy['reality-opts'], undefined);
+  const outbound = JSON.parse(makeSingBox(entries(data, customer.id))).outbounds[1];
+  assert.equal(outbound.tls.enabled, true);
+  assert.equal(outbound.tls.reality, undefined);
+  assert.equal(formatSubscription(data, customer, 'surge'), null);
+});

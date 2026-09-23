@@ -13,7 +13,8 @@ fi
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   systemctl disable --now nexusgate-agent.service 2>/dev/null || true
   systemctl disable --now nexusgate-xray.service 2>/dev/null || true
-  rm -f -- /etc/systemd/system/nexusgate-agent.service /etc/systemd/system/nexusgate-xray.service
+  systemctl disable --now nexusgate-cert-renew.timer 2>/dev/null || true
+  rm -f -- /etc/systemd/system/nexusgate-agent.service /etc/systemd/system/nexusgate-xray.service /etc/systemd/system/nexusgate-cert-renew.service /etc/systemd/system/nexusgate-cert-renew.timer
   systemctl daemon-reload
 fi
 if command -v rc-service >/dev/null; then
@@ -22,9 +23,11 @@ if command -v rc-service >/dev/null; then
   rc-update del nexusgate-agent default 2>/dev/null || true
   rc-update del nexusgate-xray default 2>/dev/null || true
   rm -f -- /etc/init.d/nexusgate-agent /etc/init.d/nexusgate-xray
+  rm -f -- /etc/periodic/daily/nexusgate-cert-renew
 fi
 
 rm -rf -- /opt/nexusgate-agent /etc/nexusgate /var/log/nexusgate
-rm -f -- /usr/local/sbin/ng-agent /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall
+rm -f -- /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh
+rm -f -- /usr/local/sbin/ng-agent /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall /usr/local/sbin/ng-agent-doctor /usr/local/sbin/ng-agent-cert
 printf 'NexusGate Agent 与其资源已删除。系统共用的 Node.js、Xray 可执行文件和其他服务未删除。\n'
 printf '请在控制台删除/遗忘此设备，以撤销其 Agent 密钥和登记。\n'

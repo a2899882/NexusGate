@@ -75,6 +75,10 @@ update_panel() {
     journalctl -u nexusgate -n 100 --no-pager || true
     die "更新后控制面启动失败；可使用上方备份恢复"
   fi
+  if [[ -f /etc/nexusgate/agent.env ]] && command -v ng-agent-update >/dev/null; then
+    info '检测到本机同时承载节点，更新本机 Agent'
+    ng-agent-update || info 'Agent 更新失败；控制面仍可运行，请执行 ng-agent doctor 查看原因'
+  fi
   info "更新完成；更新前备份：$current_backup"
 }
 

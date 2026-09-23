@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.3.0'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.4.0'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -126,8 +126,11 @@ function renderServers() {
   const q = state.search.toLowerCase();
   const rows = state.servers.filter((item) => [item.name,item.region,item.publicAddress,item.publicAddressV6,...(item.labels || [])].join(' ').toLowerCase().includes(q)).map((server) => `<tr>
     <td><strong>${esc(server.name)}</strong><small>${esc(server.publicAddress)}${server.publicAddressV6 ? ` · ${esc(server.publicAddressV6)}` : ''}</small></td><td>${esc(roleText[server.role] || server.role)}</td><td>${esc(server.region || '未分组')}</td>
-    <td>${tags(server.labels)}</td><td>${status(server.status)}<small>${server.lastSeenAt ? `最后上报 ${fmtDate(server.lastSeenAt)}` : '等待 Agent 注册'}</small>${server.pendingCleanup ? `<small>待清理 ${server.pendingCleanup} 项 · 设备上线后执行</small>` : ''}</td>
-    <td><div class="actions"><button data-action="edit-server" data-id="${esc(server.id)}">编辑</button><button data-action="enroll-server" data-id="${esc(server.id)}">注册 / 重装</button><button data-action="agent-uninstall">SSH 卸载</button>${server.pendingCleanup ? `<button data-action="retry-cleanup" data-id="${esc(server.id)}">重试清理</button>` : ''}${server.pendingCleanup && server.status !== 'online' ? `<button class="danger" data-action="forget-server" data-id="${esc(server.id)}">遗忘离线设备</button>` : `<button class="danger" data-action="delete-server" data-id="${esc(server.id)}">删除</button>`}</div></td></tr>`).join('');
+    <td>${tags(server.labels)}</td><td>${status(server.status)}<small>${server.lastSeenAt ? `最后上报 ${fmtDate(server.lastSeenAt)}` : '等待 Agent 注册'}</small>${server.engine && server.engine.status === 'error' ? `<small class="error-detail" title="${esc(server.engine.detail)}">引擎故障：${esc(server.engine.detail)}</small>` : ''}${server.pendingCleanup ? `<small>待清理 ${server.pendingCleanup} 项</small>` : ''}</td>
+    <td>${rowActions(server.id, `<button data-action="edit-server" data-id="${esc(server.id)}">编辑</button><button data-action="enroll-server" data-id="${esc(server.id)}">注册</button>`, [
+      ['agent-uninstall','SSH 卸载'], ...(server.pendingCleanup ? [['retry-cleanup','重试清理']] : []),
+      server.pendingCleanup && server.status !== 'online' ? ['forget-server','遗忘离线设备'] : ['delete-server','删除设备']
+    ])}</td></tr>`).join('');
   return `<div class="page-intro"><p>统一管理入口转发机、出口落地机与单机节点。Agent 主动连接控制面，不保存设备 SSH 密码；重装 Agent 会自动对账并恢复已有资源。</p><button class="primary" data-action="add-server">＋ 添加设备</button></div>
     <section class="panel"><div class="panel-head"><div class="toolbar"><input class="search" data-search placeholder="搜索名称、地区、IP 或标签" value="${esc(state.search)}"><span class="tag">${state.servers.length} 台</span></div></div>
     <div class="table-wrap"><table><thead><tr><th>设备</th><th>用途</th><th>地区</th><th>标签</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('没有匹配设备','添加设备后生成一次性注册命令')}</td></tr>`}</tbody></table></div></section>`;
@@ -140,7 +143,7 @@ function renderCustomers() {
     return `<tr><td><strong>${esc(item.name)}</strong><small>${esc(item.group || '未分组')}</small></td><td>${status(item.status)}</td>
       <td><strong>${fmtBytes(item.usedBytes)} / ${item.trafficLimitBytes ? fmtBytes(item.trafficLimitBytes) : '不限'}</strong><div class="progress"><i style="width:${percent}%"></i></div></td>
       <td>${item.expiresAt ? fmtDate(item.expiresAt) : '不限期'}</td><td>${item.ipLimit || '不限'} IP<small>设备策略 ${item.deviceLimit || '不限'}（独立凭据阶段启用）</small></td><td>${tags(item.tags)}</td>
-      <td><div class="actions"><button data-action="edit-customer" data-id="${esc(item.id)}">编辑</button><button data-action="customer-subscription" data-id="${esc(item.id)}">订阅链接</button><button data-action="reset-usage" data-id="${esc(item.id)}">流量清零</button><button data-action="toggle-customer" data-id="${esc(item.id)}">${item.status === 'active' ? '停用' : '启用'}</button><button class="danger" data-action="delete-customer" data-id="${esc(item.id)}">删除</button></div>${item.pendingCleanup ? `<small>后台仍有 ${item.pendingCleanup} 项设备清理任务；已删除线路后可删除客户。</small>` : ''}</td></tr>`;
+      <td>${rowActions(item.id, `<button data-action="edit-customer" data-id="${esc(item.id)}">编辑</button><button data-action="customer-subscription" data-id="${esc(item.id)}">订阅</button>`, [['reset-usage','流量清零'],['toggle-customer',item.status === 'active' ? '停用' : '启用'],['delete-customer','删除客户']])}${item.pendingCleanup ? `<small>待清理 ${item.pendingCleanup} 项</small>` : ''}</td></tr>`;
   }).join('');
   return `<div class="page-intro"><p>客户使用独立线路凭据。流量、到期日期、滚动 IP 上限会实际执行；设备数量需配合后续“一设备一凭据”机制。每位客户拥有可重置的订阅链接。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
     <section class="panel"><div class="panel-head"><div class="toolbar"><input class="search" data-search placeholder="搜索客户、分组或标签" value="${esc(state.search)}"><span class="tag">${state.customers.length} 位</span></div></div>
@@ -157,6 +160,17 @@ function chainActions(chain) {
   return `${edit}${remove}`;
 }
 
+function rowActions(id, primary, more) {
+  return `<div class="actions compact-actions">${primary}<select data-row-actions data-id="${esc(id)}" aria-label="更多操作"><option value="">更多操作</option>${more.map(([action,label]) => `<option value="${esc(action)}">${esc(label)}</option>`).join('')}</select></div>`;
+}
+
+function compactChainActions(chain) {
+  const actions = chainActions(chain).match(/<button\b[^>]*>[^<]*<\/button>/g) || [];
+  const primary = actions.slice(0, 2).join('');
+  const more = actions.slice(2).map((html) => [(html.match(/data-action="([^"]+)"/) || [,''])[1], html.replace(/<[^>]+>/g, '')]);
+  return more.length ? rowActions(chain.id, primary, more) : `<div class="actions compact-actions">${primary}</div>`;
+}
+
 function renderChains() {
   const rows = state.chains.map((chain) => {
     const direct = (chain.topology || 'forward') === 'direct';
@@ -164,7 +178,7 @@ function renderChains() {
     const exit = direct ? '本机直出' : ((state.servers.find((item) => item.id === chain.exitServerId) || {}).name || '已删除');
     return `<tr><td><strong>${esc(chain.name)}</strong><small>${esc(topologyText[chain.topology || 'forward'])} · ${esc(path)}</small></td>
       <td>${esc(names(chain.relayServerIds, state.servers))}<small>${esc(chain.networkMode || 'ipv4').toUpperCase()}</small></td><td>${esc(exit)}</td>
-      <td>${esc(names(chain.customerIds, state.customers))}</td><td>${status(chain.status)}${chain.lastError ? `<small>${esc(chain.lastError)}</small>` : ''}</td><td><div class="actions">${chainActions(chain)}</div></td></tr>`;
+      <td>${esc(names(chain.customerIds, state.customers))}</td><td>${status(chain.status)}${chain.lastError ? `<small class="error-detail" title="${esc(chain.lastError)}">${esc(chain.lastError)}</small>` : ''}</td><td>${compactChainActions(chain)}</td></tr>`;
   }).join('');
   return `<div class="page-intro"><p>“转发线路”把多个客户端入口汇聚到一个出口；“单机直连”无需出口机，直接在任意设备创建节点。编辑运行中线路后，点击“应用修改”安全重建。</p><button class="primary" data-action="add-chain">＋ 新建线路</button></div>
     <section class="panel"><div class="table-wrap"><table><thead><tr><th>线路</th><th>入口 / 节点设备</th><th>出口</th><th>客户</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('还没有线路','准备好设备和客户后创建第一条线路')}</td></tr>`}</tbody></table></div></section>`;
@@ -211,6 +225,7 @@ function serverForm(item = null) {
     <label>设备名称<input name="name" value="${esc(server.name || '')}" placeholder="新加坡入口 01" required></label><label>用途<select name="role"><option value="relay"${selected('relay',server.role)}>入口 / 转发</option><option value="exit"${selected('exit',server.role)}>出口 / 落地</option><option value="hybrid"${selected('hybrid',server.role)}>综合节点</option></select></label>
     <label>地区 / 分组<input name="region" value="${esc(server.region || '')}" placeholder="新加坡"></label><label>公网 IPv4 / 域名<input name="publicAddress" value="${esc(server.publicAddress || '')}" placeholder="203.0.113.10" required></label>
     <label>公网 IPv6（可选）<input name="publicAddressV6" value="${esc(server.publicAddressV6 || '')}" placeholder="2001:db8::10"></label><label>标签（逗号分隔）<input name="labels" value="${esc((server.labels || []).join(', '))}" placeholder="CN2, 高带宽, 主力"></label>
+    <label class="wide">节点 TLS 域名（VLESS WS TLS 使用）<input name="tlsDomain" value="${esc(server.tlsDomain || '')}" placeholder="node.example.com"><small>须解析到这台设备，并在设备上运行 ng-agent cert issue node.example.com 邮箱，或导入现有证书。面板机兼作落地机无需填写。</small></label>
     <label>可用端口起点<input name="portRangeStart" type="number" value="${Number(server.portRangeStart || 20000)}" min="1024" max="65535" required></label><label>可用端口终点<input name="portRangeEnd" type="number" value="${Number(server.portRangeEnd || 50000)}" min="1024" max="65535" required></label>
     <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '添加设备'}</button></div></form>`);
 }
@@ -253,11 +268,13 @@ function multiPicker(name, items, values, subtitle, emptyLabel) {
 function subscriptionModal(customer) {
   if (!customer || !customer.subscriptionToken) return toast('客户订阅令牌尚未生成，请刷新页面', true);
   const formats = [
-    ['auto','自动识别（Clash / 通用 Base64）'], ['base64','通用 Base64 / V2Ray / Shadowrocket'],
-    ['clash','Clash Meta / Mihomo'], ['singbox','sing-box JSON 配置'], ['raw','原始节点链接']
+    ['auto','自动识别客户端'], ['v2ray','V2Ray / v2rayNG'], ['shadowrocket','Shadowrocket 小火箭'],
+    ['base64','通用 Base64'], ['clash','Mihomo / Clash 简洁版'], ['clash-smart','Mihomo / Clash 智能分流'],
+    ['singbox','sing-box JSON'], ['surge','Surge（仅兼容节点）'], ['raw','原始节点链接']
   ];
   modal('CLIENT SUBSCRIPTION', `${customer.name} · 订阅链接`, `<div class="stack"><div class="notice">仅展示已成功部署的入口节点。客户停用、到期或流量用尽时链接停止分发。重置令牌会立即使旧订阅地址失效；已复制的节点凭据仍需停用或重建线路才能撤销。</div>
-    ${formats.map(([format,label]) => { const url = `${location.origin}/s/${customer.subscriptionToken}/${format}`; return `<div class="subscription-row"><div><b>${esc(label)}</b><code>${esc(url)}</code></div><button type="button" data-action="copy-uri" data-value="${esc(url)}">复制</button></div>`; }).join('')}
+    ${formats.map(([format,label]) => { const url = `${location.origin}/s/${customer.subscriptionToken}/${format}`; return `<div class="subscription-row"><div><b>${esc(label)}</b><code title="${esc(url)}">${esc(url)}</code></div><div class="subscription-actions"><button type="button" data-action="copy-uri" data-value="${esc(url)}">复制</button><button type="button" data-action="qr-uri" data-value="${esc(url)}" aria-label="显示${esc(label)}二维码">二维码</button></div><div class="subscription-qr" hidden></div></div>`; }).join('')}
+    <div class="field-note">二维码在当前浏览器本地生成，不向第三方图片服务发送订阅令牌。Surge 只包含它原生支持的节点协议。</div>
     <div class="notice warning">IP 限制按滚动观察窗口执行；同一节点链接可复制，设备数量策略当前尚不能可靠识别物理设备。请勿将订阅地址公开。</div>
     <div class="form-actions"><button class="danger" data-action="rotate-subscription" data-id="${esc(customer.id)}">重置订阅地址</button><button data-close>关闭</button></div></div>`);
 }
@@ -282,7 +299,7 @@ function chainForm(item = null) {
     <label data-forward-only>出口端口<div class="inline-fields"><select name="exitPortMode" data-chain-sync><option value="random"${selected('random',chain.exitPortMode)}>范围内随机</option><option value="fixed"${selected('fixed',chain.exitPortMode)}>固定端口</option></select><input name="exitPort" type="number" value="${esc(chain.exitPort || '')}" placeholder="固定时填写" min="1024" max="65535"></div></label>
     <div class="section-title">客户分配</div>
     <div class="wide picker-field"><span>客户</span>${multiPicker('customerIds',state.customers.filter((customer) => customer.status === 'active' || (chain.customerIds || []).includes(customer.id)),chain.customerIds,(customer) => `${customer.group || '未分组'}${customer.status !== 'active' ? ' · 已停用' : ''}`,'客户')}<small>批量选择多个客户时请使用随机端口。</small></div>
-    <div class="notice wide">当前可部署协议如上。Hysteria 2、AnyTLS、VLESS WS TLS 需要额外的协议引擎或节点证书自动化，目前不会出现在可选列表中，避免创建后才发现无法部署。</div>
+    <div class="notice wide">VLESS WS TLS 需要入口设备的有效证书；Hysteria 2 和 AnyTLS 仍需要独立协议引擎，未开放部署。</div>
     ${item && !['draft'].includes(item.status) ? '<div class="notice warning wide">保存运行中线路只会标记“待重新部署”，不会立即中断服务。确认后再点击“应用修改”。</div>' : ''}
     <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '创建线路'}</button></div></form>`);
   syncChainForm();
@@ -323,7 +340,7 @@ document.addEventListener('submit', async (event) => {
     }
     if (form.id === 'server-form') {
       const resourceId = data.get('resourceId');
-      const payload = { name:data.get('name'), role:data.get('role'), region:data.get('region'), publicAddress:data.get('publicAddress'), publicAddressV6:data.get('publicAddressV6'), portRangeStart:Number(data.get('portRangeStart')), portRangeEnd:Number(data.get('portRangeEnd')), labels:splitList(data.get('labels')) };
+      const payload = { name:data.get('name'), role:data.get('role'), region:data.get('region'), publicAddress:data.get('publicAddress'), publicAddressV6:data.get('publicAddressV6'), tlsDomain:data.get('tlsDomain'), portRangeStart:Number(data.get('portRangeStart')), portRangeEnd:Number(data.get('portRangeEnd')), labels:splitList(data.get('labels')) };
       await api(resourceId ? `/api/servers/${resourceId}` : '/api/servers', { method:resourceId ? 'PATCH' : 'POST', body:JSON.stringify(payload) });
       $('#modal').close(); toast(resourceId ? '设备信息已更新' : '设备已添加'); await load('servers');
     } else if (form.id === 'customer-form') {
@@ -371,6 +388,12 @@ document.addEventListener('click', async (event) => {
       const command = `curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/agent-install.sh | bash -s -- --server ${location.origin} --token ${result.token}`;
       modal('ONE-TIME ENROLLMENT', 'Agent 注册 / 重装命令', `<div class="stack"><div class="notice">令牌 30 分钟内有效且只能使用一次。重装会保留本机资源文件，并在 Agent 重启后自动与控制面对账。</div><div class="codebox">${esc(command)}</div><button class="primary" data-action="copy-uri" data-value="${esc(command)}">复制命令</button></div>`);
     } else if (action === 'copy-uri') { await navigator.clipboard.writeText(button.dataset.value); toast('已复制到剪贴板'); }
+    else if (action === 'qr-uri') {
+      const target = $('.subscription-qr', button.closest('.subscription-row'));
+      if (!target.hidden) { target.hidden = true; target.replaceChildren(); return; }
+      const qr = qrcode(0, 'M'); qr.addData(button.dataset.value, 'Byte'); qr.make();
+      target.innerHTML = qr.createSvgTag(4, 4); target.hidden = false;
+    }
     else if (action === 'agent-uninstall') {
       const command = 'ng-agent uninstall';
       const fallback = 'curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/agent-uninstall.sh | bash';
@@ -409,6 +432,10 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', (event) => {
+  if (event.target.matches('[data-row-actions]') && event.target.value) {
+    const button = document.createElement('button'); button.dataset.action = event.target.value; button.dataset.id = event.target.dataset.id;
+    event.target.value = ''; button.hidden = true; document.body.append(button); button.click(); button.remove(); return;
+  }
   if (event.target.closest('[data-picker-option]')) {
     const picker = event.target.closest('[data-picker]');
     $('[data-picker-count]', picker).textContent = `已选择 ${$$('input[type="checkbox"]:checked', picker).length} 项`;

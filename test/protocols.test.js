@@ -43,3 +43,19 @@ test('builds direct Shadowsocks, SOCKS5 and IPv6 client resources', () => {
   assert.equal(socks.inbounds[0].protocol, 'socks');
   assert.doesNotThrow(() => validateEntryProtocol('socks5-auth'));
 });
+
+test('VLESS WebSocket TLS requires a node certificate domain and exports TLS clients', () => {
+  const credentials = newCredentialSet('vless-ws-tls', null);
+  assert.doesNotThrow(() => validateEntryProtocol('vless-ws-tls'));
+  assert.throws(() => buildDirectResource({ resourceId:'res_tls_missing', tagPrefix:'tls', port:24444,
+    protocol:'vless-ws-tls', credentials, customer }), /证书域名/);
+  const resource = buildDirectResource({ resourceId:'res_tls_123', tagPrefix:'tls', port:24444,
+    protocol:'vless-ws-tls', credentials, customer, tlsDomain:'node.example.com' });
+  const stream = resource.inbounds[0].streamSettings;
+  assert.equal(stream.security, 'tls');
+  assert.equal(stream.tlsSettings.certificates[0].certificateFile, '/etc/nexusgate/tls/node.example.com/fullchain.pem');
+  const uri = buildClientUri({ protocol:'vless-ws-tls', relayServer:relay, relayPort:24444,
+    credentials, tlsDomain:'node.example.com', name:'TLS 节点' });
+  assert.match(uri, /security=tls/);
+  assert.match(uri, /sni=node.example.com/);
+});

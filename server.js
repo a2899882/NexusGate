@@ -17,7 +17,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -67,12 +67,16 @@ function normalizeServer(body, current = {}) {
     region: 'region' in body ? cleanText(body.region, 80) : (current.region || ''),
     publicAddress: 'publicAddress' in body ? requiredText(body.publicAddress, '公网地址', 255) : current.publicAddress,
     publicAddressV6: 'publicAddressV6' in body ? cleanText(body.publicAddressV6, 255) : (current.publicAddressV6 || ''),
+    tlsDomain: 'tlsDomain' in body ? cleanText(body.tlsDomain, 253).toLowerCase() : (current.tlsDomain || ''),
     portRangeStart: 'portRangeStart' in body ? Number(body.portRangeStart) : Number(current.portRangeStart || 20000),
     portRangeEnd: 'portRangeEnd' in body ? Number(body.portRangeEnd) : Number(current.portRangeEnd || 50000),
     labels: 'labels' in body ? asIds(body.labels).slice(0, 20) : (current.labels || [])
   };
   if (!Number.isInteger(next.portRangeStart) || !Number.isInteger(next.portRangeEnd) || next.portRangeStart < 1024 || next.portRangeEnd > 65535 || next.portRangeStart > next.portRangeEnd) {
     const error = new Error('端口范围必须是 1024–65535 之间的整数'); error.statusCode = 400; throw error;
+  }
+  if (next.tlsDomain && (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(next.tlsDomain))) {
+    const error = new Error('TLS 域名必须是有效的公网域名'); error.statusCode = 400; throw error;
   }
   return next;
 }
@@ -265,6 +269,9 @@ async function handleAgent(req, res, pathname) {
         server.status = 'online';
         server.lastSeenAt = nowIso();
         server.system = body.system || server.system || {};
+        server.engine = body.engine && ['ready','error'].includes(body.engine.status)
+          ? { status: body.engine.status, detail: cleanText(body.engine.detail, 400), at: nowIso() }
+          : server.engine || null;
       }
     });
     sendJson(res, 200, { ok: true, serverTime: nowIso() });
@@ -710,7 +717,7 @@ async function handleAdminApi(req, res, pathname) {
 }
 
 function handleSubscription(req, res, pathname) {
-  const match = /^\/s\/([A-Za-z0-9_-]{32,100})\/(auto|raw|base64|clash|singbox)$/.exec(pathname);
+  const match = /^\/s\/([A-Za-z0-9_-]{32,100})\/(auto|raw|base64|v2ray|shadowrocket|clash|clash-smart|mihomo|singbox|surge)$/.exec(pathname);
   if (!match) return false;
   const headers = { 'cache-control':'no-store, private', 'x-robots-tag':'noindex, nofollow', 'vary':'User-Agent' };
   if (req.method !== 'GET') { sendError(res, 405, '只支持 GET 请求'); return true; }
@@ -723,7 +730,8 @@ function handleSubscription(req, res, pathname) {
     (customer.trafficLimitBytes > 0 && customer.usedBytes >= customer.trafficLimitBytes)) {
     sendJson(res, 403, { message:'客户已停用、到期或流量用尽' }, headers); return true;
   }
-  const result = formatSubscription(store.data, customer, match[2], String(req.headers['user-agent'] || ''));
+  const format = ({ v2ray:'base64', shadowrocket:'base64', mihomo:'clash-smart' })[match[2]] || match[2];
+  const result = formatSubscription(store.data, customer, format, String(req.headers['user-agent'] || ''));
   if (!result) { sendJson(res, 503, { message:'当前没有部署成功的入口节点' }, headers); return true; }
   const body = Buffer.from(result.body);
   res.writeHead(200, { ...headers, 'content-type':result.contentType, 'content-length':body.length,

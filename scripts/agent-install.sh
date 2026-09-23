@@ -24,11 +24,11 @@ done
 [[ -n "$TOKEN" ]] || die "缺少 --token"
 if command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq && apt-get install -y -qq ca-certificates curl unzip nodejs
+  apt-get update -qq && apt-get install -y -qq ca-certificates curl unzip nodejs openssl
 elif command -v dnf >/dev/null; then
-  dnf install -y ca-certificates curl unzip nodejs
+  dnf install -y ca-certificates curl unzip nodejs openssl
 elif command -v apk >/dev/null; then
-  apk add --no-cache bash ca-certificates curl unzip nodejs openrc
+  apk add --no-cache bash ca-certificates curl unzip nodejs openrc openssl
 else
   die "当前安装器支持 Debian/Ubuntu、RHEL 系和 Alpine"
 fi
@@ -55,17 +55,21 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/ag
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/run.sh" -o /opt/nexusgate-agent/run.sh
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-update.sh" -o /usr/local/sbin/ng-agent-update
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-uninstall.sh" -o /usr/local/sbin/ng-agent-uninstall
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-doctor.sh" -o /usr/local/sbin/ng-agent-doctor
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-cert.sh" -o /usr/local/sbin/ng-agent-cert
 cat > /usr/local/sbin/ng-agent <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 case "${1:-}" in
   update) exec ng-agent-update ;;
   uninstall) shift; exec ng-agent-uninstall "$@" ;;
-  *) printf 'NexusGate Agent: ng-agent update | ng-agent uninstall\n' ;;
+  doctor|status) exec ng-agent-doctor ;;
+  cert) shift; exec ng-agent-cert "$@" ;;
+  *) printf 'NexusGate Agent: ng-agent doctor | ng-agent cert | ng-agent update | ng-agent uninstall\n' ;;
 esac
 EOF
 chmod 0644 /opt/nexusgate-agent/agent.js
-chmod 0755 /opt/nexusgate-agent/run.sh /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall /usr/local/sbin/ng-agent
+chmod 0755 /opt/nexusgate-agent/run.sh /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall /usr/local/sbin/ng-agent-doctor /usr/local/sbin/ng-agent-cert /usr/local/sbin/ng-agent
 install -d -m 0700 /etc/nexusgate /etc/nexusgate/xray /etc/nexusgate/xray/resources
 install -d -m 0750 /var/log/nexusgate
 if [[ ! -f /etc/nexusgate/xray/config.json ]]; then
@@ -74,7 +78,7 @@ fi
 chmod 0600 /etc/nexusgate/xray/config.json
 
 info "向控制面注册"
-enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.2.0",system:{platform:process.platform,arch:process.arch}}))')"
+enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.4.0",system:{platform:process.platform,arch:process.arch}}))')"
 response="$(curl -fsS -H 'content-type: application/json' --data "$enroll_json" "${CONTROLLER%/}/api/agent/enroll")" || die "注册失败，请检查地址和令牌"
 agent_key="$(RESPONSE_VALUE="$response" node -e 'const r=JSON.parse(process.env.RESPONSE_VALUE); if(!r.agentKey) process.exit(1); process.stdout.write(r.agentKey)')" || die "控制面返回无效"
 
@@ -93,6 +97,7 @@ if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   systemctl daemon-reload
   systemctl enable nexusgate-xray.service nexusgate-agent.service
   systemctl restart nexusgate-xray.service
+  rm -f -- /etc/nexusgate/last-heartbeat.json
   systemctl restart nexusgate-agent.service
   service_manager="systemd"
 elif command -v rc-service >/dev/null; then
@@ -103,11 +108,25 @@ elif command -v rc-service >/dev/null; then
   rc-update add nexusgate-xray default >/dev/null
   rc-update add nexusgate-agent default >/dev/null
   rc-service nexusgate-xray restart
+  rm -f -- /etc/nexusgate/last-heartbeat.json
   rc-service nexusgate-agent restart
   service_manager="OpenRC"
 else
   die "未检测到 systemd 或 OpenRC"
 fi
-printf '\n\033[1;32mAgent 安装并注册完成（%s）。\033[0m\n' "$service_manager"
+for _ in {1..35}; do
+  [[ -s /etc/nexusgate/last-heartbeat.json ]] && break
+  sleep 1
+done
+if [[ ! -s /etc/nexusgate/last-heartbeat.json ]]; then
+  if [[ "$service_manager" == systemd ]]; then journalctl -u nexusgate-agent.service -n 35 --no-pager || true; fi
+  die 'Agent 注册成功但没有向控制面上报心跳；运行 ng-agent doctor 排查后再重试'
+fi
+printf '\n\033[1;32mAgent 安装、注册和首次心跳完成（%s）。\033[0m\n' "$service_manager"
 printf '后续更新 Agent：ng-agent-update\n'
 printf '卸载 Agent：ng-agent uninstall\n'
+printf '检查 Agent 与 Xray：ng-agent doctor\n'
+if [[ "$service_manager" == systemd ]] && ! systemctl is-active --quiet nexusgate-agent.service; then
+  journalctl -u nexusgate-agent.service -n 35 --no-pager || true
+  die 'Agent 注册已完成，但服务没有运行；请执行 ng-agent doctor 检查原因'
+fi

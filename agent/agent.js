@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.2.0';
+const VERSION = '0.4.0';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -16,6 +16,7 @@ const KEY_FILE = process.env.NG_KEY_FILE || '/etc/nexusgate/keys.json';
 const ACCESS_LOG = process.env.NG_XRAY_ACCESS_LOG || '/var/log/nexusgate/xray-access.log';
 const CURSOR_FILE = process.env.NG_ACCESS_CURSOR || '/etc/nexusgate/access-cursor.json';
 const POLL_MS = Math.max(3, Number(process.env.NG_POLL_SECONDS || 8)) * 1000;
+let lastEngineError = '';
 
 if (!CONTROLLER || !AGENT_KEY) {
   console.error('NG_CONTROLLER and NG_AGENT_KEY are required');
@@ -141,10 +142,25 @@ function applyResource(payload) {
   if (!payload || !payload.resource || !payload.resource.id) throw new Error('Missing resource payload');
   const artifacts = {};
   const resource = materialize(payload.resource, artifacts);
+  for (const inbound of resource.inbounds || []) {
+    const tls = inbound.streamSettings && inbound.streamSettings.tlsSettings;
+    if (!tls) continue;
+    const domain = tls.serverName;
+    const expected = `/etc/nexusgate/tls/${domain}/`;
+    for (const cert of tls.certificates || []) {
+      if (!cert.certificateFile.startsWith(expected) || !cert.keyFile.startsWith(expected) ||
+          !fs.existsSync(cert.certificateFile) || !fs.existsSync(cert.keyFile)) {
+        throw new Error(`TLS certificate for ${domain} is missing; run ng-agent cert issue ${domain} EMAIL or ng-agent cert import`);
+      }
+      run('openssl', ['x509', '-in', cert.certificateFile, '-noout', '-checkend', '86400']);
+      const nameCheck = run('openssl', ['x509', '-in', cert.certificateFile, '-noout', '-checkhost', domain]);
+      if (!nameCheck.includes('does match')) throw new Error(`TLS certificate does not match ${domain}`);
+    }
+  }
   const target = safeResourcePath(resource.id);
   const backup = fs.existsSync(target) ? fs.readFileSync(target) : null;
   fs.writeFileSync(target, `${JSON.stringify(resource, null, 2)}\n`, { mode: 0o600 });
-  try { activateConfig(); }
+  try { activateConfig(); lastEngineError = ''; }
   catch (error) {
     if (backup) fs.writeFileSync(target, backup, { mode: 0o600 }); else fs.rmSync(target, { force: true });
     throw error;
@@ -187,8 +203,17 @@ function systemInfo() {
   };
 }
 
+function engineHealth() {
+  const result = fs.existsSync('/run/systemd/system')
+    ? spawnSync('systemctl', ['is-active', 'nexusgate-xray.service'], { encoding:'utf8', timeout:3000 })
+    : spawnSync('rc-service', ['nexusgate-xray', 'status'], { encoding:'utf8', timeout:3000 });
+  return { status: result.status === 0 ? 'ready' : 'error', detail: (result.status === 0 ? result.stdout : lastEngineError || result.stderr || result.stdout || '').trim().slice(0, 400) };
+}
+
 async function heartbeat() {
-  await request('/api/agent/heartbeat', { method: 'POST', body: JSON.stringify({ version: VERSION, system: systemInfo() }) });
+  await request('/api/agent/heartbeat', { method: 'POST', body: JSON.stringify({ version: VERSION, system: systemInfo(), engine: engineHealth() }) });
+  try { fs.writeFileSync('/etc/nexusgate/last-heartbeat.json', `${JSON.stringify({ at:new Date().toISOString() })}\n`, { mode:0o600 }); }
+  catch (error) { log('Heartbeat reached controller but readiness file failed', error.message); }
 }
 
 function queryUsage() {
@@ -256,8 +281,10 @@ async function pollLoop() {
 async function main() {
   ensureDirectories();
   log(`NexusGate Agent v${VERSION} starting`);
-  activateConfig();
-  await heartbeat();
+  // Keep the control channel alive even when a stale node configuration cannot start.
+  // The administrator can then see the engine error and a repair job can be claimed.
+  try { activateConfig(); } catch (error) { lastEngineError = error.message; log('Initial Xray activation failed', error.message); }
+  try { await heartbeat(); } catch (error) { log('Initial heartbeat failed', error.message); }
   setInterval(() => heartbeat().catch((error) => log('Heartbeat failed', error.message)), 30000).unref();
   usageLoop();
   await pollLoop();

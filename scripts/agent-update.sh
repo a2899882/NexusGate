@@ -13,27 +13,46 @@ trap 'rm -rf -- "$tmp_dir"' EXIT
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/agent.js" -o "$tmp_dir/agent.js"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/run.sh" -o "$tmp_dir/run.sh"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-uninstall.sh" -o "$tmp_dir/uninstall.sh"
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-doctor.sh" -o "$tmp_dir/doctor.sh"
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-cert.sh" -o "$tmp_dir/cert.sh"
 node --check "$tmp_dir/agent.js"
 install -m 0644 "$tmp_dir/agent.js" /opt/nexusgate-agent/agent.js
 install -m 0755 "$tmp_dir/run.sh" /opt/nexusgate-agent/run.sh
 install -m 0755 "$tmp_dir/uninstall.sh" /usr/local/sbin/ng-agent-uninstall
+install -m 0755 "$tmp_dir/doctor.sh" /usr/local/sbin/ng-agent-doctor
+install -m 0755 "$tmp_dir/cert.sh" /usr/local/sbin/ng-agent-cert
 cat > /usr/local/sbin/ng-agent <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 case "${1:-}" in
   update) exec ng-agent-update ;;
   uninstall) shift; exec ng-agent-uninstall "$@" ;;
-  *) printf 'NexusGate Agent: ng-agent update | ng-agent uninstall\n' ;;
+  doctor|status) exec ng-agent-doctor ;;
+  cert) shift; exec ng-agent-cert "$@" ;;
+  *) printf 'NexusGate Agent: ng-agent doctor | ng-agent cert | ng-agent update | ng-agent uninstall\n' ;;
 esac
 EOF
 chmod 0755 /usr/local/sbin/ng-agent
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+  curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/systemd/nexusgate-agent.service" -o /etc/systemd/system/nexusgate-agent.service
+  curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/systemd/nexusgate-xray.service" -o /etc/systemd/system/nexusgate-xray.service
+  systemctl daemon-reload
+  rm -f -- /etc/nexusgate/last-heartbeat.json
   systemctl restart nexusgate-agent.service
   systemctl is-active --quiet nexusgate-agent.service || die "Agent 重启失败"
 elif command -v rc-service >/dev/null; then
+  curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/openrc/nexusgate-agent" -o /etc/init.d/nexusgate-agent
+  curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/openrc/nexusgate-xray" -o /etc/init.d/nexusgate-xray
+  chmod 0755 /etc/init.d/nexusgate-agent /etc/init.d/nexusgate-xray
+  rm -f -- /etc/nexusgate/last-heartbeat.json
   rc-service nexusgate-agent restart
   rc-service nexusgate-agent status >/dev/null || die "Agent 重启失败"
 else
   die "未检测到 systemd 或 OpenRC"
 fi
+for _ in {1..35}; do
+  [[ -s /etc/nexusgate/last-heartbeat.json ]] && break
+  sleep 1
+done
+[[ -s /etc/nexusgate/last-heartbeat.json ]] || die 'Agent 已重启，但尚未连接控制面；请执行 ng-agent doctor'
 info "Agent 更新完成"

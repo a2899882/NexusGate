@@ -2,7 +2,7 @@
 
 面向多入口机、多出口机和多客户场景的轻量集中编排面板。一个控制面统一管理设备、客户额度、转发线路、单机节点、部署任务和客户端链接，不再逐台打开不同面板维护。
 
-> 当前版本：`v0.2.1`。已能下发真实 Xray 配置，适合先在测试设备验证；正式迁移前仍需验证客户端兼容性、云安全组和系统防火墙。
+> 当前版本：`v0.4.0`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
 
 ## 核心模型
 
@@ -29,10 +29,11 @@ flowchart TB
 
 - 默认明亮、可切换暗色的中文响应式 UI；登录页仅保留账号与密码，不显示业务介绍。
 - 固定宽度侧栏与可阅读的横排导航：“概览、服务器、客户、线路、部署与链接、设置与运维”。
-- 设备、客户、线路均可创建后编辑；运行中线路修改后进入“待重新部署”。
+- 设备、客户、线路均可创建后编辑；运行中线路修改后进入“待重新部署”。列表操作按行收纳，长列表不再因按钮换行变高。
 - 线路表单中的入口设备和客户可搜索后多选，长列表在固定高度内滚动。
 - 支持完整重建失败线路，以及只重试失败部署项。
-- Agent 重装后自动撤销旧密钥、重新对账并恢复已有资源。
+- Agent 重装后自动撤销旧密钥、重新对账并恢复已有资源；首次心跳成功才提示安装完成。Xray 配置错误不会再让 Agent 控制通道退出；引擎状态和错误会显示在设备行。
+- 部署前检查目标 Agent 最近心跳与 Xray 状态，离线设备不会造成无限期的“排队中”。面板机可以兼任出口/单机节点，`ng update` 会同步升级本机已安装的 Agent。
 - 任务 5 分钟租约、超时自动重试，连续 3 次失败才标记异常。
 - 客户到期使用日期选择器、常用期限下拉和时间下拉，不要求手写日期格式。
 - 客户独立凭据、流量额度、到期、滚动 IP 上限、用量清零及启停。
@@ -45,7 +46,7 @@ flowchart TB
 - 失败/未完成线路可从“线路”删除；尚未确认清理的节点资源保留隐藏记录与任务，设备重新上线后继续清理，避免遗留监听端口。
 - 若离线设备永久损坏，可在删除关联线路后使用“强制遗忘”；这会放弃远程清理，因此仅限设备已销毁或已手工清除代理配置时使用。
 - 线路删除后客户可立即删除；后台仍保留设备资源清理任务。设备登记需要等 Agent 清理确认，或在目标机卸载后对离线设备选择遗忘。
-- 每客户独立随机订阅地址，支持 Base64、原始 URI、Mihomo/Clash YAML、sing-box JSON；可重置地址。只分发已成功部署的节点，停用/到期/流量用尽时拒绝分发。
+- 每客户独立随机订阅地址，支持 V2Ray、Shadowrocket、通用 Base64、Mihomo/Clash 简洁版和智能分流版、sing-box JSON、Surge 兼容节点及原始 URI；二维码在浏览器本地生成。可重置地址，只分发已成功部署的节点，停用/到期/流量用尽时拒绝分发。
 - 入口/出口 Agent 可以在目标机通过 `ng-agent uninstall` 卸载专属服务、配置和密钥；控制台删除登记会撤销其访问资格。
 - Agent 支持 Debian/Ubuntu、RHEL 系 systemd，以及 Alpine OpenRC。
 
@@ -56,6 +57,7 @@ flowchart TB
 | 客户入口 / 单机节点 | VLESS + Reality + Vision | 可部署 |
 | 客户入口 / 单机节点 | VLESS + Reality | 可部署 |
 | 客户入口 / 单机节点 | VLESS + WebSocket（无 TLS） | 可部署，建议仅配合可信网络或外层 TLS |
+| 客户入口 / 单机节点 | VLESS + WebSocket + TLS | 可部署；入口设备需填写 TLS 域名并安装有效证书 |
 | 客户入口 / 单机节点 | VMess + WebSocket（无 TLS） | 可部署，兼容模式 |
 | 客户入口 / 单机节点 | Shadowsocks 2022 AES-128 / AES-256 | 可部署 |
 | 客户入口 / 单机节点 | Shadowsocks AES-128-GCM / AES-256-GCM | 可部署 |
@@ -63,9 +65,9 @@ flowchart TB
 | 入口 → 出口 | 上述四种 Shadowsocks | 可部署 |
 | 入口 → 出口 | VLESS TCP | 可部署，建议可信网络或外层隧道 |
 | 入口 → 出口 | SOCKS5 用户密码 | 可部署，仅建议可信网络或外层隧道 |
-| 客户入口 | VLESS WS TLS / Hysteria2 / AnyTLS | 规划中；当前不提供可部署选项 |
+| 客户入口 | Hysteria2 / AnyTLS | 尚未开放；缺少可验证的 sing-box 引擎、证书和统计链路 |
 
-Hysteria2 和 AnyTLS 需要 sing-box/QUIC/TLS 证书管理链路，VLESS WS TLS 也需要节点域名与证书自动化。项目不会把未完成的适配器伪装成可用功能。
+Hysteria2 和 AnyTLS 需要 sing-box/QUIC/TLS 证书管理及真实来源 IP 和用量统计链路。项目不会把未完成的适配器伪装成可用功能。VLESS WS TLS 用系统证书；在入口设备上使用 `ng-agent cert issue` 申请并配置自动续签（需要公网域名指向该机器、80/TCP 无占用），或用 `ng-agent cert import` 导入已有证书。已运行 Caddy 的面板机若要兼作 TLS 入口，应导入现有有效证书；单纯作出口无需节点证书。
 
 Reality 默认目标/SNI 为 `www.tesla.com:443`，也可选 Amazon、Apple、Intel、AMD 或自定义。目标必须实际接受所选 SNI，预设本身不是防共享或防盗用手段；访问控制依赖每客户随机 UUID、shortId 等凭据。
 
@@ -94,9 +96,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scri
 2. 点击“注册 / 重装”，复制一次性命令到目标 VPS 以 root 执行。
 3. 在“客户”创建客户。
 4. 在“线路”选择转发线路或单机直连，选择协议、设备、客户和端口策略。
-5. 点击部署，在“部署与链接”复制单条客户端链接，或在“客户 → 订阅链接”获取自动识别、Base64、Clash/Mihomo、sing-box JSON 和原始 URI 地址。
+5. 点击部署，在“部署与链接”复制单条客户端链接，或在“客户 → 订阅链接”获取各客户端订阅和二维码。
 
-订阅 URL 属于凭据；请经 HTTPS 私下交付。自动识别格式根据客户端 User-Agent 返回 Clash/Mihomo 或 Base64；客户端识别不准时使用对应的固定格式。sing-box JSON 是可直接导入的本机 127.0.0.1:2080 混合入站配置，可能与已有监听端口冲突。自定义模板、Surge 格式和二维码仍待开发。
+订阅 URL 属于凭据；请经 HTTPS 私下交付。自动识别格式根据客户端 User-Agent 返回 Clash/Mihomo 或 Base64；识别不准时使用固定格式。智能分流包含广告拦截、国内直连、AI/流媒体分组和自动延迟选择；客户端需要可用的 Mihomo geodata。Surge 格式只导出它支持的 SS、SOCKS5 和 VMess 节点；若无兼容节点则返回错误。sing-box JSON 是本机 127.0.0.1:2080 混合入站配置，可能与已有监听端口冲突。自定义订阅模板和可靠的一设备一凭据仍待开发。
 
 > 云安全组和系统防火墙必须放行实际使用的 TCP/UDP 端口。默认端口池为 `20000–50000`，生产环境建议按设备缩小范围。
 
@@ -129,9 +131,13 @@ curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/age
 ```bash
 ng-agent-update
 ng-agent uninstall         # 新版 Agent 在目标机交互卸载
+ng-agent doctor            # 检查心跳、Xray 配置、服务及最近错误
+ng-agent cert issue node.example.com admin@example.com
+ng-agent cert import node.example.com /path/fullchain.pem /path/privkey.pem
+ng-agent cert status node.example.com
 ```
 
-如果某台设备已出现“上线后又离线”，在控制面为该设备重新生成一次“注册 / 重装”命令并执行。v0.2 安装器会显式重启旧进程，并自动恢复控制面记录的资源。
+如果某台设备已出现“上线后又离线”，先在该机运行 `ng-agent doctor`，核对控制面连通性、Xray 配置错误和服务日志。然后更新 Agent；必要时在控制面重新生成“注册 / 重装”命令并执行。注册后首次心跳失败会明确报错。
 
 老 Agent 没有 `ng-agent` 命令时，先运行 `ng-agent-update`，或在目标机运行：
 
