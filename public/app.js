@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.5.2'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.5.3'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -21,7 +21,7 @@ const oldUsageAgent = (version) => { const parts = String(version || '').match(/
 const splitList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 const statusText = {
   online:'在线', offline:'离线', pending:'待注册', active:'运行中', draft:'草稿', deploying:'部署中', queued:'排队中',
-  running:'执行中', completed:'已完成', failed:'失败', degraded:'异常', suspended:'已停用', removing:'停用中', deleted:'已删除',
+  running:'执行中', completed:'已完成', failed:'失败', degraded:'异常', suspended:'已暂停', suspending:'暂停中', partially_suspended:'部分暂停', removing:'停用中', deleted:'已删除',
   redeploying:'重建中', redeploy_pending:'等待重建', changes_pending:'待重新部署'
 };
 const roleText = { relay:'入口 / 转发', exit:'出口 / 落地', hybrid:'综合节点' };
@@ -142,12 +142,12 @@ function renderCustomers() {
   const q = state.search.toLowerCase();
   const rows = state.customers.filter((item) => [item.name,item.group,...(item.tags || [])].join(' ').toLowerCase().includes(q)).map((item) => {
     const percent = item.trafficLimitBytes ? Math.min(100, Math.round(item.usedBytes / item.trafficLimitBytes * 100)) : 0;
-    return `<tr><td><strong>${esc(item.name)}</strong><small>${esc(item.group || '未分组')}</small></td><td>${status(item.status)}</td>
+    return `<tr><td><strong>${esc(item.name)}</strong><small>${esc(item.group || '未分组')}</small></td><td>${status(item.status)}${item.status === 'suspended' ? `<small>${esc(({ traffic_limit:'额度耗尽', expired:'已到期', ip_limit:'节点 IP 超限', manual:'手动停用' })[item.suspendReason] || '待恢复')}</small>` : ''}</td>
       <td><strong>${fmtBytes(item.usedBytes)} / ${item.trafficLimitBytes ? fmtBytes(item.trafficLimitBytes) : '不限'}</strong><small>上行 ${fmtBytes(item.usedUplinkBytes)} · 下行 ${fmtBytes(item.usedDownlinkBytes)}</small><div class="progress"><i style="width:${percent}%"></i></div><small>${item.lastUsageAt ? `最后计量 ${fmtDate(item.lastUsageAt)}` : '尚未收到入口流量统计'}</small></td>
       <td>${item.expiresAt ? fmtDate(item.expiresAt) : '不限期'}</td><td>节点 IP ${item.observedIpCount || 0} / ${item.ipLimit || '不限'}<small>订阅客户端约 ${item.subscriptionClientCount || 0} / ${item.deviceLimit || '不限'}</small></td><td>${tags(item.tags)}</td>
       <td>${rowActions(item.id, `<button data-action="edit-customer" data-id="${esc(item.id)}">编辑</button><button data-action="customer-subscription" data-id="${esc(item.id)}">订阅</button><button data-action="customer-access" data-id="${esc(item.id)}">访问</button>`, [['reset-usage','流量清零'],['toggle-customer',item.status === 'active' ? '停用' : '启用'],['delete-customer','删除客户']])}${item.pendingCleanup ? `<small>待清理 ${item.pendingCleanup} 项</small>` : ''}</td></tr>`;
   }).join('');
-  return `<div class="page-intro"><p>流量按入口上行＋下行双向累计，Agent 约每分钟上报；客户端订阅卡片要在下一次更新后才会显示新额度。IP 按滚动窗口统计，点击“访问”可查看来源和订阅记录。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
+  return `<div class="page-intro"><p>流量按入口上行＋下行双向累计，Agent 约每分钟上报。额度、到期或节点 IP 触发暂停后，调整限制会自动恢复原节点；待 Agent 完成恢复任务，订阅才可更新。旧版已经变为草稿的线路可点“恢复原节点”。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
     <section class="panel"><div class="panel-head"><div class="toolbar"><input class="search" data-search placeholder="搜索客户、分组或标签" value="${esc(state.search)}"><span class="tag">${state.customers.length} 位</span></div></div>
     <div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>流量</th><th>到期</th><th>使用限制</th><th>标签</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="7">${empty('还没有客户','先创建客户，再编排线路')}</td></tr>`}</tbody></table></div></section>`;
 }
@@ -155,10 +155,11 @@ function renderCustomers() {
 function chainActions(chain) {
   const edit = `<button data-action="edit-chain" data-id="${esc(chain.id)}">编辑</button>`;
   const remove = `<button class="danger" data-action="delete-chain" data-id="${esc(chain.id)}">删除</button>`;
-  if (chain.status === 'draft') return `${edit}<button class="primary" data-action="deploy-chain" data-id="${esc(chain.id)}">部署</button>${remove}`;
+  if (chain.status === 'draft') return `${edit}${chain.generation > 0 ? `<button class="primary" data-action="restore-chain" data-id="${esc(chain.id)}">恢复原节点</button><button data-action="deploy-chain" data-id="${esc(chain.id)}">全新部署</button>` : `<button class="primary" data-action="deploy-chain" data-id="${esc(chain.id)}">部署</button>`}${remove}`;
+  if (chain.status === 'suspended') return `${edit}${state.customers.some((item) => chain.customerIds.includes(item.id) && item.status === 'active') ? `<button class="primary" data-action="restore-chain" data-id="${esc(chain.id)}">恢复原节点</button>` : ''}<button data-action="remove-chain" data-id="${esc(chain.id)}">停用线路</button>${remove}`;
   if (chain.status === 'changes_pending') return `${edit}<button class="primary" data-action="redeploy-chain" data-id="${esc(chain.id)}">应用修改</button><button data-action="remove-chain" data-id="${esc(chain.id)}">停用</button>`;
   if (chain.status === 'degraded') return `${edit}<button class="primary" data-action="repair-chain" data-id="${esc(chain.id)}">修复失败项</button><button data-action="remove-chain" data-id="${esc(chain.id)}">停用</button>${remove}`;
-  if (['active','deploying'].includes(chain.status)) return `${edit}<button data-action="redeploy-chain" data-id="${esc(chain.id)}">重新部署</button><button data-action="remove-chain" data-id="${esc(chain.id)}">停用</button>`;
+  if (['active','deploying','suspending','partially_suspended'].includes(chain.status)) return `${edit}<button data-action="redeploy-chain" data-id="${esc(chain.id)}">重新部署</button><button data-action="remove-chain" data-id="${esc(chain.id)}">停用</button>`;
   return `${edit}${remove}`;
 }
 
@@ -192,10 +193,14 @@ function renderDeployments() {
     const server = state.servers.find((entry) => entry.id === item.serverId);
     const customer = state.customers.find((entry) => entry.id === item.customerId);
     const chain = state.chains.find((entry) => entry.id === item.chainId);
+    const canCopy = item.status === 'active' && item.clientUri && customer?.status === 'active' &&
+      (!customer.expiresAt || Date.parse(customer.expiresAt) > Date.now()) &&
+      (!(customer.trafficLimitBytes > 0) || customer.usedBytes < customer.trafficLimitBytes) &&
+      (item.role === 'direct' || state.deployments.some((exit) => exit.id === item.exitDeploymentId && exit.status === 'active'));
     return `<tr><td><strong>${esc(chain ? chain.name : '已删除线路')}</strong><small>${esc(deploymentRoleText[item.role] || item.role)}</small></td><td>${esc(customer ? customer.name : '已删除')}</td>
       <td>${esc(server ? server.name : '已删除')}<small>${esc(server ? (server.publicAddressV6 && chain && chain.networkMode === 'ipv6' ? server.publicAddressV6 : server.publicAddress) : '')}:${item.port}</small></td>
       <td>${esc(protocolName(item.protocol, item.role === 'exit' ? 'exit-transport' : 'relay-ingress'))}</td><td>${status(item.status)}${item.error ? `<small>${esc(item.error)}</small>` : ''}</td>
-      <td><div class="actions">${item.clientUri ? `<button data-action="copy-uri" data-value="${esc(item.clientUri)}">复制链接</button>` : ''}${chain ? `<button data-action="edit-chain" data-id="${esc(chain.id)}">编辑线路</button>` : ''}</div></td></tr>`;
+      <td><div class="actions">${canCopy ? `<button data-action="copy-uri" data-value="${esc(item.clientUri)}">复制链接</button>` : ''}${chain ? `<button data-action="edit-chain" data-id="${esc(chain.id)}">编辑线路</button>` : ''}</div></td></tr>`;
   }).join('');
   return `<div class="page-intro"><p>显示线路生成的实际入口、出口和单机节点。客户端链接只在入口资源部署成功后生成；编辑请从对应线路统一完成。</p></div>
     <section class="panel"><div class="table-wrap"><table><thead><tr><th>线路 / 角色</th><th>客户</th><th>设备</th><th>协议</th><th>状态 / 错误</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('暂无部署','从“线路编排”页面发起部署')}</td></tr>`}</tbody></table></div></section>`;
@@ -311,7 +316,7 @@ function chainForm(item = null) {
     <label data-forward-only>出口端口<div class="inline-fields"><select name="exitPortMode" data-chain-sync><option value="random"${selected('random',chain.exitPortMode)}>范围内随机</option><option value="fixed"${selected('fixed',chain.exitPortMode)}>固定端口</option></select><input name="exitPort" type="number" value="${esc(chain.exitPort || '')}" placeholder="固定时填写" min="1024" max="65535"></div></label>
     <div class="section-title">客户分配</div>
     <div class="wide picker-field"><span>客户</span>${multiPicker('customerIds',state.customers.filter((customer) => customer.status === 'active' || (chain.customerIds || []).includes(customer.id)),chain.customerIds,(customer) => `${customer.group || '未分组'}${customer.status !== 'active' ? ' · 已停用' : ''}`,'客户')}<small>批量选择多个客户时请使用随机端口。</small></div>
-    <div class="notice wide">VLESS WS TLS 与 Hysteria 2 需要入口设备的有效证书。Hysteria 2 使用 UDP，请放行入口端口。先在设备填写 TLS 域名，再用 ng-agent cert issue 或 issue-cloudflare 申请证书；AnyTLS 仍需 sing-box 引擎。</div>
+    <div class="notice wide">VLESS WS TLS 与 Hysteria 2 需要入口设备的有效证书。Hysteria 2 使用 UDP，请放行入口端口。先在设备填写 TLS 域名，再用 ng-agent cert issue 或 issue-cloudflare 申请证书。AnyTLS 可与现有 Xray 出口共存，但本版未接入 sing-box 服务和独立计量，暂不提供部署。</div>
     ${item && !['draft'].includes(item.status) ? '<div class="notice warning wide">保存运行中线路只会标记“待重新部署”，不会立即中断服务。确认后再点击“应用修改”。</div>' : ''}
     <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '创建线路'}</button></div></form>`);
   syncChainForm();
@@ -432,6 +437,7 @@ document.addEventListener('click', async (event) => {
       const item = state.customers.find((entry) => entry.id === itemId);
       await api(`/api/customers/${itemId}`, { method:'PATCH', body:JSON.stringify({ status:item.status === 'active' ? 'suspended' : 'active' }) }); toast('客户状态已更新'); await load();
     } else if (action === 'deploy-chain' && confirm('现在向所选设备下发这条线路？')) { await api(`/api/chains/${itemId}/deploy`, { method:'POST', body:'{}' }); toast('部署任务已进入队列'); await load(); }
+    else if (action === 'restore-chain' && confirm('使用原端口和节点凭据恢复这条线路？如端口已被其他线路占用，请改用全新部署。')) { const result = await api(`/api/chains/${itemId}/restore`, { method:'POST', body:'{}' }); toast(`已排队恢复 ${result.jobs} 项原资源`); await load(); }
     else if (action === 'redeploy-chain' && confirm('重新部署会先移除旧资源，再自动创建新资源。确认继续？')) { await api(`/api/chains/${itemId}/redeploy`, { method:'POST', body:'{}' }); toast('线路已进入安全重建流程'); await load(); }
     else if (action === 'repair-chain' && confirm('仅重试当前失败的部署项？')) { await api(`/api/chains/${itemId}/repair`, { method:'POST', body:'{}' }); toast('修复任务已进入队列'); await load(); }
     else if (action === 'remove-chain' && confirm('停用会从相关设备移除配置，确认继续？')) { await api(`/api/chains/${itemId}/remove`, { method:'POST', body:'{}' }); toast('移除任务已进入队列'); await load(); }

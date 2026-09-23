@@ -8,7 +8,7 @@ const { Store } = require('./lib/store');
 const { hashSecret, verifySecret, randomToken, SessionManager } = require('./lib/auth');
 const { sendJson, sendError, readJson, route, serveStatic } = require('./lib/http');
 const { PROFILE_CATALOG, REALITY_PRESETS, validateEntryProtocol, validateProtocolPair, isRealityProtocol } = require('./lib/protocols');
-const { Orchestrator, audit, id, nowIso } = require('./lib/orchestrator');
+const { Orchestrator, audit, id, nowIso, suspendCustomerResources, resumeCustomerResources } = require('./lib/orchestrator');
 const { formatSubscription } = require('./lib/subscriptions');
 const { redactSecrets } = require('./lib/redact');
 const { clientIdentity, activeClients, observedIps, pruneAccess } = require('./lib/access');
@@ -19,7 +19,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.5.2';
+const VERSION = '0.5.3';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -126,6 +126,13 @@ function publicCustomer(item) {
   return { ...item, pendingCleanup: store.data.deployments.filter((entry) => entry.customerId === item.id && entry.archived && entry.status !== 'deleted').length,
     observedIpCount: observedIps(store.data, item.id).length,
     subscriptionClientCount: activeClients(store.data, item.id).length };
+}
+
+function customerBlockReason(data, customer) {
+  if (customer.expiresAt && Date.parse(customer.expiresAt) <= Date.now()) return 'expired';
+  if (customer.trafficLimitBytes > 0 && customer.usedBytes >= customer.trafficLimitBytes) return 'traffic_limit';
+  if (customer.ipLimit > 0 && new Set(observedIps(data, customer.id).map((item) => item.ip)).size > customer.ipLimit) return 'ip_limit';
+  return null;
 }
 
 function getIp(req) {
@@ -344,17 +351,7 @@ async function handleAgent(req, res, pathname) {
         customer.status = 'suspended';
         customer.suspendReason = 'ip_limit';
         customer.updatedAt = nowIso();
-        for (const deployment of data.deployments.filter((item) => item.customerId === customer.id && item.status === 'active')) {
-          const alreadyQueued = data.jobs.some((job) => job.deploymentId === deployment.id && job.action === 'delete_resource' && ['queued', 'running'].includes(job.status));
-          if (!alreadyQueued) {
-            data.jobs.push({
-              id: id('job'), serverId: deployment.serverId, deploymentId: deployment.id,
-              action: 'delete_resource', payload: { resourceId: deployment.resourceId }, status: 'queued',
-              attempts: 0, createdAt: nowIso(), updatedAt: nowIso(), error: null
-            });
-            deployment.status = 'removing';
-          }
-        }
+        suspendCustomerResources(data, customer, `agent:${agent.id}`);
         audit(data, `agent:${agent.id}`, 'suspend_ip_limit', customer.id, { ipCount, limit: customer.ipLimit });
       }
     });
@@ -565,6 +562,8 @@ async function handleAdminApi(req, res, pathname) {
     const customer = await store.transaction((data) => {
       const item = data.customers.find((entry) => entry.id === customerItem.id);
       if (!item) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
+      const wasActive = item.status === 'active';
+      const previousReason = item.suspendReason;
       if ('name' in body) item.name = requiredText(body.name, '客户名称');
       if ('group' in body) item.group = cleanText(body.group, 80);
       if ('notes' in body) item.notes = cleanText(body.notes, 1000);
@@ -573,23 +572,18 @@ async function handleAdminApi(req, res, pathname) {
       if ('deviceLimit' in body) item.deviceLimit = nonNegativeNumber(body.deviceLimit, '设备上限', true);
       if ('expiresAt' in body) item.expiresAt = optionalIso(body.expiresAt, '到期日期');
       if ('tags' in body) item.tags = asIds(body.tags).slice(0, 20);
-      if ('status' in body && ['active', 'suspended'].includes(body.status)) {
-        item.status = body.status;
-        item.suspendReason = body.status === 'active' ? null : (item.suspendReason || 'manual');
-        if (body.status === 'suspended') {
-          for (const deployment of data.deployments.filter((entry) => entry.customerId === item.id && entry.status === 'active')) {
-            const alreadyQueued = data.jobs.some((job) => job.deploymentId === deployment.id && job.action === 'delete_resource' && ['queued', 'running'].includes(job.status));
-            if (!alreadyQueued) {
-              data.jobs.push({ id: id('job'), serverId: deployment.serverId, deploymentId: deployment.id, action: 'delete_resource', payload: { resourceId: deployment.resourceId }, status: 'queued', attempts: 0, createdAt: nowIso(), updatedAt: nowIso(), error: null, leaseUntil: null });
-              deployment.status = 'removing'; deployment.updatedAt = nowIso();
-            }
-          }
-        } else {
-          for (const chain of data.chains.filter((entry) => entry.customerIds.includes(item.id) && ['active', 'degraded'].includes(entry.status))) {
-            chain.status = 'changes_pending'; chain.updatedAt = nowIso();
-          }
-        }
+      const reason = customerBlockReason(data, item);
+      if (body.status === 'active' && reason) {
+        const error = new Error(`客户仍受${{ expired:'到期时间', traffic_limit:'流量额度', ip_limit:'节点 IP 上限' }[reason]}限制，请先修改限制再启用`);
+        error.statusCode = 409; throw error;
       }
+      if (body.status === 'suspended') { item.status = 'suspended'; item.suspendReason = 'manual'; }
+      else if (reason && wasActive) { item.status = 'suspended'; item.suspendReason = reason; }
+      else if (body.status === 'active' || (!wasActive && !reason && ['traffic_limit','expired','ip_limit'].includes(previousReason))) {
+        item.status = 'active'; item.suspendReason = null;
+      }
+      if (wasActive && item.status === 'suspended') suspendCustomerResources(data, item, actor);
+      if (!wasActive && item.status === 'active') resumeCustomerResources(data, item, actor);
       item.updatedAt = nowIso();
       audit(data, actor, 'update_customer', item.id);
       return structuredClone(item);
@@ -603,6 +597,9 @@ async function handleAdminApi(req, res, pathname) {
       const item = data.customers.find((entry) => entry.id === resetUsage.id);
       if (!item) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
       item.usedBytes = 0; item.usedUplinkBytes = 0; item.usedDownlinkBytes = 0;
+      if (item.status === 'suspended' && item.suspendReason === 'traffic_limit' && !customerBlockReason(data, item)) {
+        item.status = 'active'; item.suspendReason = null; resumeCustomerResources(data, item, actor);
+      }
       item.updatedAt = nowIso(); audit(data, actor, 'reset_customer_usage', item.id);
     });
     sendJson(res, 200, { ok: true }); return true;
@@ -674,6 +671,8 @@ async function handleAdminApi(req, res, pathname) {
   if (redeploy && req.method === 'POST') { const count = await orchestrator.removeChain(redeploy.id, actor, true); sendJson(res, 202, { jobs: count }); return true; }
   const repair = route('/api/chains/:id/repair', pathname);
   if (repair && req.method === 'POST') { const count = await orchestrator.repairChain(repair.id, actor); sendJson(res, 202, { jobs: count }); return true; }
+  const restoreChain = route('/api/chains/:id/restore', pathname);
+  if (restoreChain && req.method === 'POST') { const count = await orchestrator.restoreChain(restoreChain.id, actor); sendJson(res, 202, { jobs: count }); return true; }
   const chainItem = route('/api/chains/:id', pathname);
   if (chainItem && req.method === 'PATCH') {
     const body = await readJson(req);
@@ -769,9 +768,13 @@ async function handleSubscription(req, res, pathname) {
   const format = ({ v2ray:'base64', shadowrocket:'base64', mihomo:'clash-smart' })[match[2]] || match[2];
   const result = formatSubscription(store.data, customer, format, String(req.headers['user-agent'] || ''));
   if (!result) {
-    access.status = 503; access.reason = '没有已部署的入口节点';
+    const restoring = store.data.deployments.some((item) => item.customerId === customer.id && !item.archived &&
+      ['relay','direct'].includes(item.role) && ['queued','removing'].includes(item.status) &&
+      store.data.jobs.some((job) => job.deploymentId === item.id && ['queued','running'].includes(job.status)));
+    access.status = 503; access.reason = restoring ? '入口节点恢复中' : '没有已部署的入口节点';
     await store.transaction((data) => { data.subscriptionAccess.push(access); pruneAccess(data); });
-    sendJson(res, 503, { message:'当前没有部署成功的入口节点' }, headers); return true;
+    sendJson(res, 503, { message:restoring ? '节点正在恢复，请稍后更新订阅' : '当前没有部署成功的入口节点，请在“转发与节点”恢复原节点或部署线路' },
+      { ...headers, ...(restoring ? { 'retry-after':'15' } : {}) }); return true;
   }
   const body = Buffer.from(result.body);
   const allowed = await store.transaction((data) => {
@@ -856,17 +859,10 @@ async function housekeeping() {
           customer.status = 'suspended';
           customer.suspendReason = expired ? 'expired' : 'traffic_limit';
           customer.updatedAt = nowIso();
-          for (const deployment of data.deployments.filter((item) => item.customerId === customer.id && item.status === 'active')) {
-            const alreadyQueued = data.jobs.some((job) => job.deploymentId === deployment.id && job.action === 'delete_resource' && ['queued', 'running'].includes(job.status));
-            if (!alreadyQueued) {
-              data.jobs.push({
-                id: id('job'), serverId: deployment.serverId, deploymentId: deployment.id,
-                action: 'delete_resource', payload: { resourceId: deployment.resourceId }, status: 'queued',
-                attempts: 0, createdAt: nowIso(), updatedAt: nowIso(), error: null
-              });
-              deployment.status = 'removing';
-            }
-          }
+          suspendCustomerResources(data, customer, 'system:quota');
+        } else if (customer.status === 'suspended' && customer.suspendReason === 'ip_limit' && !customerBlockReason(data, customer)) {
+          customer.status = 'active'; customer.suspendReason = null; customer.updatedAt = nowIso();
+          resumeCustomerResources(data, customer, 'system:ip_window');
         }
       }
       const jobCutoff = now - (data.settings.completedJobRetentionDays || 7) * 86400000;

@@ -157,6 +157,93 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.equal((await request(`/api/customers/${customerB.id}/access`)).events.length, 0);
   assert.equal((await fetch(`${base}/s/${rotated.subscriptionToken}/raw`, { headers: { 'x-device-id': 'another-client' } })).status, 200);
 
+  const originalUri = (await request('/api/chains')).deployments.find((item) => item.id === directDeploy.deployments[0].id).clientUri;
+  await request(`/api/customers/${customerB.id}`, 'PATCH', { trafficLimitBytes:2000 });
+  assert.equal((await fetch(`${base}/s/${rotated.subscriptionToken}/raw`)).status, 403);
+  const prematureResume = await fetch(`${base}/api/customers/${customerB.id}`, { method:'PATCH',
+    headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:JSON.stringify({ status:'active' }) });
+  assert.equal(prematureResume.status, 409);
+  const deletePoll = await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}` } });
+  const deleteJob = (await deletePoll.json()).job;
+  assert.equal(deleteJob.action, 'delete_resource');
+  await fetch(`${base}/api/agent/jobs/${deleteJob.id}/complete`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' }, body:JSON.stringify({ success:true }) });
+  assert.equal((await request('/api/chains')).chains.find((item) => item.id === direct.id).status, 'suspended');
+  await request(`/api/customers/${customerB.id}`, 'PATCH', { trafficLimitBytes:10000 });
+  const restoringSubscription = await fetch(`${base}/s/${rotated.subscriptionToken}/raw`);
+  assert.equal(restoringSubscription.status, 503);
+  assert.equal(restoringSubscription.headers.get('retry-after'), '15');
+  assert.match((await restoringSubscription.json()).message, /正在恢复/);
+  const applyPoll = await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}` } });
+  const applyJob = (await applyPoll.json()).job;
+  assert.equal(applyJob.action, 'apply_resource');
+  await fetch(`${base}/api/agent/jobs/${applyJob.id}/complete`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' }, body:JSON.stringify({ success:true }) });
+  assert.equal((await request('/api/chains')).deployments.find((item) => item.id === directDeploy.deployments[0].id).clientUri, originalUri);
+  assert.equal((await fetch(`${base}/s/${rotated.subscriptionToken}/raw`, { headers:{ 'x-device-id':'another-client' } })).status, 200);
+
+  // Raising the limit while a delete is already running still applies only after cleanup.
+  await request(`/api/customers/${customerB.id}`, 'PATCH', { trafficLimitBytes:3000 });
+  const inFlight = (await (await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}` } })).json()).job;
+  assert.equal(inFlight.action, 'delete_resource');
+  await request(`/api/customers/${customerB.id}`, 'PATCH', { trafficLimitBytes:10000 });
+  await fetch(`${base}/api/agent/jobs/${inFlight.id}/complete`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' }, body:JSON.stringify({ success:true }) });
+  const afterDelete = (await request('/api/chains')).deployments.find((item) => item.id === directDeploy.deployments[0].id);
+  assert.equal(afterDelete.status, 'queued');
+  const reapply = (await (await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}` } })).json()).job;
+  assert.equal(reapply.action, 'apply_resource');
+  await fetch(`${base}/api/agent/jobs/${reapply.id}/complete`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' }, body:JSON.stringify({ success:true }) });
+
+  // A queued deletion can be cancelled before it touches the existing node.
+  await request(`/api/customers/${customerB.id}`, 'PATCH', { trafficLimitBytes:3000 });
+  await request(`/api/customers/${customerB.id}`, 'PATCH', { trafficLimitBytes:10000 });
+  assert.equal((await request('/api/chains')).chains.find((item) => item.id === direct.id).status, 'active');
+  assert.equal((await (await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}` } })).json()).job, null);
+
+  // Routes deleted by older versions can recover the original URI with one explicit action.
+  await request(`/api/chains/${direct.id}/remove`, 'POST', {});
+  const oldDelete = (await (await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}` } })).json()).job;
+  await fetch(`${base}/api/agent/jobs/${oldDelete.id}/complete`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' }, body:JSON.stringify({ success:true }) });
+  assert.equal((await request('/api/chains')).chains.find((item) => item.id === direct.id).status, 'draft');
+  await request(`/api/customers/${customerB.id}`, 'PATCH', { trafficLimitBytes:3000 });
+  await request(`/api/customers/${customerB.id}`, 'PATCH', { trafficLimitBytes:10000 });
+  assert.equal((await request('/api/chains')).chains.find((item) => item.id === direct.id).status, 'draft');
+  await request(`/api/chains/${direct.id}/restore`, 'POST', {});
+  const oldApply = (await (await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}` } })).json()).job;
+  await fetch(`${base}/api/agent/jobs/${oldApply.id}/complete`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' }, body:JSON.stringify({ success:true }) });
+  assert.equal((await request('/api/chains')).deployments.find((item) => item.id === directDeploy.deployments[0].id).clientUri, originalUri);
+
+  // A forward route restores both the exit and the entry with the same ports and client URI.
+  const customerC = (await request('/api/customers', 'POST', { name:'配额恢复测试', trafficLimitBytes:100 })).customer;
+  const forward = (await request('/api/chains', 'POST', { name:'保留节点', relayServerIds:[relay.id], exitServerId:exit.id,
+    customerIds:[customerC.id], relayProtocol:'vless-reality-vision', exitProtocol:'shadowsocks-2022-aes128' })).chain;
+  const forwardDeploy = (await request(`/api/chains/${forward.id}/deploy`, 'POST', {})).deployments;
+  const completeNext = async (key) => {
+    const polled = await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${key}` } });
+    const { job } = await polled.json();
+    assert.ok(job);
+    const completed = await fetch(`${base}/api/agent/jobs/${job.id}/complete`, { method:'POST',
+      headers:{ authorization:`Bearer ${key}`, 'content-type':'application/json' },
+      body:JSON.stringify({ success:true, result:{ artifacts:{ realityPublicKey:'test-public-key' } } }) });
+    assert.equal(completed.status, 200);
+    return job;
+  };
+  await completeNext(agentKeys[exit.id]);
+  await completeNext(agentKey);
+  const forwardEntry = forwardDeploy.find((item) => item.role === 'relay');
+  const forwardUri = (await request('/api/chains')).deployments.find((item) => item.id === forwardEntry.id).clientUri;
+  const forwardUsage = await fetch(`${base}/api/agent/usage`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
+    body:JSON.stringify({ epoch:'fwd-1', samples:[{ resourceId:forwardEntry.resourceId, uplink:2, downlink:5 }] }) });
+  assert.equal(forwardUsage.status, 200);
+  await request(`/api/customers/${customerC.id}`, 'PATCH', { trafficLimitBytes:1 });
+  assert.equal((await completeNext(agentKeys[exit.id])).action, 'delete_resource');
+  assert.equal((await completeNext(agentKey)).action, 'delete_resource');
+  assert.equal((await request('/api/chains')).chains.find((item) => item.id === forward.id).status, 'suspended');
+  await request(`/api/customers/${customerC.id}`, 'PATCH', { trafficLimitBytes:100 });
+  assert.equal((await completeNext(agentKey)).action, 'apply_resource');
+  assert.equal((await fetch(`${base}/s/${customerC.subscriptionToken}/raw`)).status, 503);
+  assert.equal((await completeNext(agentKeys[exit.id])).action, 'apply_resource');
+  assert.equal((await request('/api/chains')).deployments.find((item) => item.id === forwardEntry.id).clientUri, forwardUri);
+  assert.equal((await fetch(`${base}/s/${customerC.subscriptionToken}/raw`)).status, 200);
+
   // Exit-server source addresses belong to relay machines, never to client IP quota.
   await fetch(`${base}/api/agent/observations`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[exit.id]}`, 'content-type':'application/json' },
     body: JSON.stringify({ observations: [{ customerId:customerB.id, ip:'198.51.100.1' }] }) });
@@ -175,9 +262,9 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   await request(`/api/chains/${chain.id}/remove`, 'POST', {});
   const deleted = await request(`/api/chains/${chain.id}`, 'DELETE');
   assert.equal(deleted.cleanupPending, 2);
-  const afterDelete = await request('/api/chains');
-  assert.equal(afterDelete.chains.some((item) => item.id === chain.id), false);
-  assert.equal(afterDelete.deployments.some((item) => item.chainId === chain.id), false);
+  const afterChainDelete = await request('/api/chains');
+  assert.equal(afterChainDelete.chains.some((item) => item.id === chain.id), false);
+  assert.equal(afterChainDelete.deployments.some((item) => item.chainId === chain.id), false);
   const source = JSON.parse(await fs.promises.readFile(path.join(dir, 'data.json'), 'utf8'));
   assert.equal(source.deployments.filter((item) => item.chainId === chain.id && item.archived && item.status === 'removing').length, 2);
   const removedCustomer = await request(`/api/customers/${customer.id}`, 'DELETE');

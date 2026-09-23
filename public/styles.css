@@ -99,3 +99,4 @@ table{font-size:13px}th{font-size:11px;letter-spacing:.02em}td strong{font-size:
 .subscription-qr{flex:1 0 100%;text-align:center;padding:14px;border-top:1px solid var(--line)}
 .subscription-qr[hidden]{display:none}
 .subscription-qr svg{max-width:min(100%,250px);height:auto;background:#fff;border:9px solid #fff;border-radius:8px}
+.status.suspending,.status.partially_suspended{color:var(--warning);background:var(--warning-soft)}
