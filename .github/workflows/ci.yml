@@ -38,8 +38,9 @@ jobs:
           GOBIN="$RUNNER_TEMP/bin" GOMAXPROCS=2 go install -p 2 -tags with_v2ray_api github.com/sagernet/sing-box/cmd/sing-box@v1.12.23
       - name: Build sing-box statistics client
         run: |
-          cp agent/stats-query.go "$RUNNER_TEMP/stats-query.go"
-          cd "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/stats-helper"
+          cp agent/stats-query.go "$RUNNER_TEMP/stats-helper/stats-query.go"
+          cd "$RUNNER_TEMP/stats-helper"
           go mod init nexusgate/statsquery
           go get github.com/sagernet/sing-box@v1.12.23
           GOMAXPROCS=2 go mod tidy
