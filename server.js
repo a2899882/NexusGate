@@ -9,6 +9,7 @@ const { hashSecret, verifySecret, randomToken, SessionManager } = require('./lib
 const { sendJson, sendError, readJson, route, serveStatic } = require('./lib/http');
 const { PROFILE_CATALOG, REALITY_PRESETS, validateEntryProtocol, validateProtocolPair, isRealityProtocol } = require('./lib/protocols');
 const { Orchestrator, audit, id, nowIso } = require('./lib/orchestrator');
+const { formatSubscription } = require('./lib/subscriptions');
 
 const APP_ROOT = __dirname;
 const PUBLIC_DIR = path.join(APP_ROOT, 'public');
@@ -16,7 +17,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.2.1';
+const VERSION = '0.3.0';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -111,6 +112,10 @@ function publicDeployment(item) {
 
 function publicServer(item) {
   return { ...item, pendingCleanup: store.data.deployments.filter((entry) => entry.serverId === item.id && entry.archived && entry.status !== 'deleted').length };
+}
+
+function publicCustomer(item) {
+  return { ...item, pendingCleanup: store.data.deployments.filter((entry) => entry.customerId === item.id && entry.archived && entry.status !== 'deleted').length };
 }
 
 function getIp(req) {
@@ -500,14 +505,14 @@ async function handleAdminApi(req, res, pathname) {
   }
 
   if (req.method === 'GET' && pathname === '/api/customers') {
-    sendJson(res, 200, { customers: store.data.customers });
+    sendJson(res, 200, { customers: store.data.customers.map(publicCustomer) });
     return true;
   }
   if (req.method === 'POST' && pathname === '/api/customers') {
     const body = await readJson(req);
     const customer = await store.transaction((data) => {
       const next = {
-        id: id('cus'), name: requiredText(body.name, '客户名称'), group: cleanText(body.group, 80),
+        id: id('cus'), subscriptionToken: randomToken(32), name: requiredText(body.name, '客户名称'), group: cleanText(body.group, 80),
         status: 'active', trafficLimitBytes: nonNegativeNumber(body.trafficLimitBytes, '流量上限'), usedBytes: 0,
         expiresAt: optionalIso(body.expiresAt, '到期日期'),
         ipLimit: nonNegativeNumber(body.ipLimit, 'IP 上限', true), deviceLimit: nonNegativeNumber(body.deviceLimit, '设备上限', true),
@@ -568,16 +573,31 @@ async function handleAdminApi(req, res, pathname) {
     });
     sendJson(res, 200, { ok: true }); return true;
   }
+  const rotateSubscription = route('/api/customers/:id/rotate-subscription', pathname);
+  if (rotateSubscription && req.method === 'POST') {
+    const customer = await store.transaction((data) => {
+      const item = data.customers.find((entry) => entry.id === rotateSubscription.id);
+      if (!item) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
+      item.subscriptionToken = randomToken(32);
+      item.updatedAt = nowIso();
+      audit(data, actor, 'rotate_subscription', item.id);
+      return publicCustomer(item);
+    });
+    sendJson(res, 200, { customer }); return true;
+  }
   if (customerItem && req.method === 'DELETE') {
     await store.transaction((data) => {
       const index = data.customers.findIndex((item) => item.id === customerItem.id);
       if (index < 0) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
-      if (data.deployments.some((item) => item.customerId === customerItem.id && item.status !== 'deleted')) {
-        throw Object.assign(new Error('客户仍有待清理资源。先删除关联线路并等待 Agent 确认清理'), { statusCode: 409 });
+      if (data.chains.some((item) => item.customerIds.includes(customerItem.id))) {
+        throw Object.assign(new Error('客户仍被线路引用。请先移除或删除关联线路'), { statusCode: 409 });
+      }
+      if (data.deployments.some((item) => item.customerId === customerItem.id && !item.archived && item.status !== 'deleted')) {
+        throw Object.assign(new Error('客户仍有活动部署。请先停用并删除关联线路'), { statusCode: 409 });
       }
       data.customers.splice(index, 1);
-      for (const chain of data.chains) chain.customerIds = chain.customerIds.filter((value) => value !== customerItem.id);
-      audit(data, actor, 'delete_customer', customerItem.id);
+      // Archived cleanup records contain resource IDs and can finish without a customer row.
+      audit(data, actor, 'delete_customer', customerItem.id, { pendingCleanup: data.deployments.filter((item) => item.customerId === customerItem.id && item.archived && item.status !== 'deleted').length });
     });
     sendJson(res, 200, { ok: true });
     return true;
@@ -679,11 +699,37 @@ async function handleAdminApi(req, res, pathname) {
     const body = await readJson(req, 20 * 1024 * 1024);
     if (body.confirm !== 'RESTORE' || !body.data) throw Object.assign(new Error('恢复确认信息不正确'), { statusCode: 400 });
     await store.replace(body.data);
+    if (store.data.customers.some((item) => !item.subscriptionToken)) {
+      await store.transaction((data) => { for (const customer of data.customers) if (!customer.subscriptionToken) customer.subscriptionToken = randomToken(32); });
+    }
     sessions = new SessionManager(store.data.settings.sessionHours || 12);
     sendJson(res, 200, { ok: true, message: '备份已恢复，请重新登录' }, { 'set-cookie': 'ng_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
     return true;
   }
   return false;
+}
+
+function handleSubscription(req, res, pathname) {
+  const match = /^\/s\/([A-Za-z0-9_-]{32,100})\/(auto|raw|base64|clash|singbox)$/.exec(pathname);
+  if (!match) return false;
+  const headers = { 'cache-control':'no-store, private', 'x-robots-tag':'noindex, nofollow', 'vary':'User-Agent' };
+  if (req.method !== 'GET') { sendError(res, 405, '只支持 GET 请求'); return true; }
+  // Store only one random secret per customer; never accept a numeric ID as a subscription credential.
+  const token = Buffer.from(match[1]);
+  const customer = store.data.customers.find((item) => item.subscriptionToken && Buffer.byteLength(item.subscriptionToken) === token.length &&
+    crypto.timingSafeEqual(Buffer.from(item.subscriptionToken), token));
+  if (!customer) { sendJson(res, 404, { message:'订阅链接不存在或已重置' }, headers); return true; }
+  if (customer.status !== 'active' || (customer.expiresAt && Date.parse(customer.expiresAt) <= Date.now()) ||
+    (customer.trafficLimitBytes > 0 && customer.usedBytes >= customer.trafficLimitBytes)) {
+    sendJson(res, 403, { message:'客户已停用、到期或流量用尽' }, headers); return true;
+  }
+  const result = formatSubscription(store.data, customer, match[2], String(req.headers['user-agent'] || ''));
+  if (!result) { sendJson(res, 503, { message:'当前没有部署成功的入口节点' }, headers); return true; }
+  const body = Buffer.from(result.body);
+  res.writeHead(200, { ...headers, 'content-type':result.contentType, 'content-length':body.length,
+    'subscription-userinfo':`upload=${Math.max(0, Math.floor(customer.usedBytes || 0))}; download=0; total=${Math.max(0, Math.floor(customer.trafficLimitBytes || 0))}; expire=${customer.expiresAt ? Math.floor(Date.parse(customer.expiresAt) / 1000) : 0}` });
+  res.end(body);
+  return true;
 }
 
 async function requestHandler(req, res) {
@@ -697,6 +743,7 @@ async function requestHandler(req, res) {
     }
     if (await handleAuth(req, res, pathname)) return;
     if (await handleAgent(req, res, pathname)) return;
+    if (handleSubscription(req, res, pathname)) return;
     if (await handleAdminApi(req, res, pathname)) return;
     if (req.method === 'GET' && await serveStatic(PUBLIC_DIR, pathname, res)) return;
     if (req.method === 'GET' && !pathname.startsWith('/api/')) {
@@ -775,6 +822,9 @@ async function housekeeping() {
 
 async function main() {
   await store.init();
+  if (store.data.customers.some((item) => !item.subscriptionToken)) {
+    await store.transaction((data) => { for (const customer of data.customers) if (!customer.subscriptionToken) customer.subscriptionToken = randomToken(32); });
+  }
   if (!store.data.users.length) {
     const password = process.env.NG_ADMIN_PASSWORD || randomToken(15);
     await store.transaction((data) => {

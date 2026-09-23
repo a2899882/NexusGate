@@ -23,7 +23,7 @@
 ## v0.3 — 订阅与协议引擎
 
 - 一设备一凭据、设备撤销与换机流程
-- Clash/Mihomo、sing-box、V2Ray、Shadowrocket 订阅与二维码
+- Surge 输出模板、自定义订阅模板和本地生成的二维码（Base64、Clash/Mihomo、sing-box JSON 已提供）
 - sing-box 引擎及 AnyTLS、Hysteria2 适配器
 - 节点域名/证书资产管理及 VLESS WS TLS
 - VLESS XHTTP/gRPC、Trojan、TUIC 等协议适配器

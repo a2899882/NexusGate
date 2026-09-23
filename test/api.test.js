@@ -71,8 +71,38 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.equal(directDeploy.deployments.length, 1);
   assert.equal(directDeploy.deployments[0].role, 'direct');
 
+  const noActive = await fetch(`${base}/s/${customerB.subscriptionToken}/base64`);
+  assert.equal(noActive.status, 503);
+  const enrollment = await request(`/api/servers/${relay.id}/enrollment-token`, 'POST', {});
+  const enrolled = await fetch(`${base}/api/agent/enroll`, { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ token:enrollment.token, hostname:'test-agent' }) });
+  const { agentKey } = await enrolled.json();
+  assert.equal(enrolled.status, 201);
+  for (let count = 0; count < 4; count += 1) {
+    const polled = await fetch(`${base}/api/agent/poll`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}` } });
+    const { job } = await polled.json();
+    if (!job) break;
+    await fetch(`${base}/api/agent/jobs/${job.id}/complete`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' }, body:JSON.stringify({ success:true, result:{ artifacts:{ realityPublicKey:'test-public-key' } } }) });
+  }
+  const raw = await fetch(`${base}/s/${customerB.subscriptionToken}/raw`);
+  assert.equal(raw.status, 200);
+  assert.match(await raw.text(), /^ss:\/\//);
+  assert.equal(raw.headers.get('cache-control'), 'no-store, private');
+  const encoded = await fetch(`${base}/s/${customerB.subscriptionToken}/base64`);
+  assert.match(Buffer.from(await encoded.text(), 'base64').toString('utf8'), /^ss:\/\//);
+  const clash = await fetch(`${base}/s/${customerB.subscriptionToken}/clash`);
+  const clashText = await clash.text();
+  assert.match(clashText, /^  - name: /m);
+  assert.match(clashText, /^    type: "ss"$/m);
+  const singbox = await fetch(`${base}/s/${customerB.subscriptionToken}/singbox`);
+  assert.equal((await singbox.json()).outbounds[1].type, 'shadowsocks');
+  const rotated = (await request(`/api/customers/${customerB.id}/rotate-subscription`, 'POST', {})).customer;
+  assert.notEqual(rotated.subscriptionToken, customerB.subscriptionToken);
+  assert.equal((await fetch(`${base}/s/${customerB.subscriptionToken}/raw`)).status, 404);
+  assert.equal((await fetch(`${base}/s/${rotated.subscriptionToken}/raw`)).status, 200);
+
   // A failed / not-yet-applied route can disappear from the UI immediately,
   // while cleanup tombstones retain the ports until agents acknowledge removal.
+  await request(`/api/chains/${chain.id}/remove`, 'POST', {});
   const deleted = await request(`/api/chains/${chain.id}`, 'DELETE');
   assert.equal(deleted.cleanupPending, 2);
   const afterDelete = await request('/api/chains');
@@ -80,6 +110,9 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.equal(afterDelete.deployments.some((item) => item.chainId === chain.id), false);
   const source = JSON.parse(await fs.promises.readFile(path.join(dir, 'data.json'), 'utf8'));
   assert.equal(source.deployments.filter((item) => item.chainId === chain.id && item.archived && item.status === 'removing').length, 2);
+  const removedCustomer = await request(`/api/customers/${customer.id}`, 'DELETE');
+  assert.equal(removedCustomer.ok, true);
+  assert.equal((await fetch(`${base}/s/${customer.subscriptionToken}/raw`)).status, 404);
   const blocked = await fetch(`${base}/api/servers/${exit.id}`, { method:'DELETE', headers:{ cookie, 'x-csrf-token':session.csrf } });
   assert.equal(blocked.status, 409);
   const retry = await request(`/api/servers/${exit.id}/cleanup`, 'POST', {});

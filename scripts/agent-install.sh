@@ -54,8 +54,18 @@ install -d -m 0755 /opt/nexusgate-agent
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/agent.js" -o /opt/nexusgate-agent/agent.js
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/run.sh" -o /opt/nexusgate-agent/run.sh
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-update.sh" -o /usr/local/sbin/ng-agent-update
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-uninstall.sh" -o /usr/local/sbin/ng-agent-uninstall
+cat > /usr/local/sbin/ng-agent <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+  update) exec ng-agent-update ;;
+  uninstall) shift; exec ng-agent-uninstall "$@" ;;
+  *) printf 'NexusGate Agent: ng-agent update | ng-agent uninstall\n' ;;
+esac
+EOF
 chmod 0644 /opt/nexusgate-agent/agent.js
-chmod 0755 /opt/nexusgate-agent/run.sh /usr/local/sbin/ng-agent-update
+chmod 0755 /opt/nexusgate-agent/run.sh /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall /usr/local/sbin/ng-agent
 install -d -m 0700 /etc/nexusgate /etc/nexusgate/xray /etc/nexusgate/xray/resources
 install -d -m 0750 /var/log/nexusgate
 if [[ ! -f /etc/nexusgate/xray/config.json ]]; then
@@ -100,3 +110,4 @@ else
 fi
 printf '\n\033[1;32mAgent 安装并注册完成（%s）。\033[0m\n' "$service_manager"
 printf '后续更新 Agent：ng-agent-update\n'
+printf '卸载 Agent：ng-agent uninstall\n'

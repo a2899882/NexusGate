@@ -12,9 +12,21 @@ tmp_dir="$(mktemp -d /tmp/nexusgate-agent-update.XXXXXX)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/agent.js" -o "$tmp_dir/agent.js"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/agent/run.sh" -o "$tmp_dir/run.sh"
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-uninstall.sh" -o "$tmp_dir/uninstall.sh"
 node --check "$tmp_dir/agent.js"
 install -m 0644 "$tmp_dir/agent.js" /opt/nexusgate-agent/agent.js
 install -m 0755 "$tmp_dir/run.sh" /opt/nexusgate-agent/run.sh
+install -m 0755 "$tmp_dir/uninstall.sh" /usr/local/sbin/ng-agent-uninstall
+cat > /usr/local/sbin/ng-agent <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+  update) exec ng-agent-update ;;
+  uninstall) shift; exec ng-agent-uninstall "$@" ;;
+  *) printf 'NexusGate Agent: ng-agent update | ng-agent uninstall\n' ;;
+esac
+EOF
+chmod 0755 /usr/local/sbin/ng-agent
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   systemctl restart nexusgate-agent.service
   systemctl is-active --quiet nexusgate-agent.service || die "Agent 重启失败"

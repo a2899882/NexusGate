@@ -58,3 +58,22 @@ html[data-theme="dark"]{--bg:#0e1420;--surface-soft:#1b2638;--primary:#79a9ff;--
 .row-actions{display:flex;gap:7px;align-items:center}.danger-link{color:var(--danger)}
 @media(max-width:860px){.sidebar{width:218px;min-width:218px}.topbar{padding:0 18px}.content{padding:20px 18px 50px}}
 @media(max-width:570px){.login-card{padding:28px 22px}.top-actions{gap:5px}.theme-button{min-width:56px}.content{padding:18px 12px 40px}}
+
+/* Long device and customer lists stay inside a searchable, keyboard-friendly picker. */
+.picker-field{display:flex;flex-direction:column;gap:7px;font-size:12px;font-weight:700}
+.picker-field>small,.picker-content>small{color:var(--muted);font-size:11px;font-weight:500}
+.multi-picker{border:1px solid var(--line-strong);border-radius:10px;background:var(--surface)}
+.multi-picker>summary{min-height:42px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;cursor:pointer;list-style:none}
+.multi-picker>summary::-webkit-details-marker{display:none}
+.multi-picker[open]>summary{border-bottom:1px solid var(--line);color:var(--primary)}
+.picker-content{padding:10px;display:grid;gap:9px}.picker-options{max-height:225px;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.picker-option{display:flex;flex-direction:row;align-items:center;min-width:0;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface-soft);cursor:pointer}
+.picker-option[hidden]{display:none}.picker-option:hover{border-color:var(--primary)}.picker-option input{flex:0 0 16px;width:16px;min-height:16px;accent-color:var(--primary)}.picker-option span{min-width:0;display:grid;gap:3px}.picker-option b,.picker-option small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.picker-option small{color:var(--muted);font-size:10px;font-weight:500}
+.subscription-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}
+.subscription-row>div{min-width:0;display:grid;gap:5px}.subscription-row code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}.subscription-row button{flex:0 0 auto}
+@media(max-width:570px){.picker-options{grid-template-columns:1fr}.subscription-row{align-items:stretch;flex-direction:column}.subscription-row button{align-self:flex-end}}
+
+/* Readable defaults on wide admin screens without inflating the navigation. */
+table{font-size:13px}th{font-size:11px;letter-spacing:.02em}td strong{font-size:13px}td small{font-size:11px}
+.panel-head p,.health-row span,.health-row small,.event small,.event time{font-size:12px}
+.status,.tag{font-size:11px}.page-intro p{font-size:13px}.actions{min-width:0}
