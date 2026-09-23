@@ -2,9 +2,9 @@
 
 面向多入口机、多出口机和多客户场景的轻量集中编排面板。一个控制面统一管理设备、客户额度、转发线路、单机节点、部署任务和客户端链接，不再逐台打开不同面板维护。
 
-> 当前版本：`v0.6.1`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
+> 当前版本：`v0.6.2`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
 
-**升级到 AnyTLS：** 面板机运行 `ng update`，入口设备运行 `ng-agent update`（会尝试构建带流量统计接口的 sing-box）。如网络或 Go 构建失败，原 Xray 节点继续运行，在入口设备运行 `ng-agent engine install` 重试。执行 `ng-agent doctor` 确认 sing-box 已安装，再填写该入口的 TLS 域名、申请证书，创建 AnyTLS 线路；入口 TCP 端口需要在云安全组和防火墙开放。AnyTLS → VLESS TCP 可以部署，但第二段未加密；跨公网推荐选择 SS2022 出口传输。
+**升级到 AnyTLS：** 面板机运行 `ng update`，入口设备运行 `ng-agent update`（会尝试构建带流量统计接口的 sing-box）。如网络或 Go 构建失败，原 Xray 节点继续运行，在入口设备运行 `ng-agent engine install` 重试。执行 `ng-agent doctor` 确认引擎已安装，在入口设备运行 `ng-agent cert` 申请节点证书并自动同步域名，然后创建 AnyTLS 线路；入口 TCP 端口需要在云安全组和防火墙开放。AnyTLS → VLESS TCP 可以部署，但第二段未加密；跨公网推荐选择 SS2022 出口传输。
 
 **从 v0.5.2 续额恢复：** 面板机运行 `ng update`。以后额度用尽而自动暂停时，调高上限或流量清零会自动排队恢复原资源，入口和出口都确认后订阅才重新返回节点；已导入客户端无需更换链接。升级前已经显示“运行中”但线路是“草稿”的历史状态无法可靠区分手动停用，在“转发与节点”点击该线路的“恢复原节点”一次；若原端口已被占用，会提示改用“全新部署”。本次是控制面更新，入口 Agent 已为 v0.5.2 时无需重装。Reality 私钥仍需保存在原 Agent 上；如果机器已重装并丢失密钥，恢复后的节点公钥会变化，应刷新订阅。
 
@@ -58,6 +58,7 @@ flowchart TB
 - 入口/出口 Agent 可以在目标机通过 `ng-agent uninstall` 卸载专属服务、配置和密钥；控制台删除登记会撤销其访问资格。
 - Agent 支持 Debian/Ubuntu、RHEL 系 systemd，以及 Alpine OpenRC。
 - Agent 访问与错误日志由 logrotate 每日检查、最多保留 7 份，达到 20 MB 也会轮转；订阅访问记录仍按控制面 30 天/全局 10000 条清理。
+- 节点证书一键申请：入口机运行 `ng-agent cert`，输入域名与邮箱；自动安装 Certbot、选择 HTTP 或 CF DNS 验证、设置续签、检查证书并把域名同步到该设备。面板部署前确认入口 Agent 已上报证书状态。
 
 ## 协议矩阵
 
@@ -81,21 +82,20 @@ Hysteria 2 复用当前 Xray Agent 的任务、统计及出口路由。AnyTLS �
 
 ### Cloudflare 域名和节点证书
 
-1. 在 CF 添加指向**入口设备公网 IP** 的节点子域名 A/AAAA 记录，例如 `node.example.com`。Reality、Hysteria 2 和大多数自定义 TCP/UDP 端口需要设置为 **DNS only（灰云）**；橙云的普通 HTTP 代理不会透传这些协议。证书的 DNS 验证与节点代理状态是不同设置。
-2. 在“服务器 → 编辑”填写同一个“节点 TLS 域名”。只用作出口的面板机器不需要节点证书；面板机作为 TLS 入口时，Caddy 已占用 80/TCP，推荐 DNS 验证。
-3. 在入口设备 SSH 创建 CF API Token，权限只授予相应 Zone 的 `Zone:DNS:Edit`；在节点机以 root 创建 `/root/cloudflare.ini`，内容为 `dns_cloudflare_api_token = <令牌>`，执行 `chmod 600 /root/cloudflare.ini`。不要把令牌发到聊天或粘贴进控制台。
-4. 在同一入口设备运行：
+1. 在 CF 添加指向**入口设备公网 IP** 的节点子域名 A/AAAA 记录，例如 `node.example.com`，将节点记录设置为 **DNS only（灰云）**。橙云的普通 HTTP 代理不会透传 Hysteria 2、AnyTLS 等自定义 TCP/UDP 端口。
+2. 首次安装 Agent 后，直接在**入口设备 SSH** 运行：
 
    ```bash
-   ng-agent cert issue-cloudflare node.example.com admin@example.com /root/cloudflare.ini
-   ng-agent cert status node.example.com
+   ng-agent cert
    ```
 
-   Agent 会安装 Certbot Cloudflare 插件、使用 DNS-01 申请受信任证书、配置每日续签检查，并在证书更新时重启运行中的 Xray 和 sing-box。DNS-01 不需要占用 80/TCP，也不要求节点域名当前解析到该设备。凭据文件应持续保留供续签使用。若该发行版没有相应插件，请按 Certbot 官方说明安装插件或使用 `import`。
+   旧 Agent 可用一行命令完成升级并进入申请：`ng-agent update && ng-agent cert`。输入节点域名、邮箱；如果本机 80/TCP 空闲，可以选择 HTTP-01（无需 CF 令牌，但须放行 80/TCP 并让域名指向本机）。若端口被 Caddy 等占用或 HTTP 验证失败，脚本会切换到 DNS-01，隐藏输入 CF API Token。只授予相应 Zone 的 `Zone:DNS:Edit`，凭据以 root 权限保存在 `/etc/nexusgate/cloudflare/` 供续签使用。令牌无法在没有 Cloudflare 授权的情况下自动获得。
 
-5. 如果 80/TCP 空闲且节点域名 DNS only 并已指向当前设备，也可运行 `ng-agent cert issue node.example.com admin@example.com` 使用 HTTP-01。已有合法证书则运行 `ng-agent cert import 域名 /path/fullchain.pem /path/privkey.pem`；手动导入的证书需要自行管理续签。
+3. 成功后自动设置每日续签、重启运行中的节点引擎，并同步“服务器”的 TLS 域名；等待约 30 秒刷新设备列表，确认显示“节点证书 · 已确认”。DNS-01 不占用 80/TCP。只有入口需要申请；单纯出口不需要。节点使用的 TCP/UDP 端口仍须放行。
 
-先运行 `ng-agent-update` 升级旧 Agent，再申请证书。完成后在“转发与节点”点击“修复失败项”；不必删除客户、重新注册节点或改变面板的 HTTPS 域名。
+已有受信任证书可运行 `ng-agent cert import 域名 /path/fullchain.pem /path/privkey.pem`；手动导入的证书需要自行管理续签。非交互调用可用 `ng-agent cert issue 域名 邮箱` 或 `ng-agent cert issue-cloudflare 域名 邮箱 /root/cloudflare.ini`。用 `ng-agent cert status 域名` 检查证书。若发行版无法安装 CF 插件，请参照 Certbot 文档安装后重试。
+
+先运行 `ng-agent update` 升级旧 Agent，再申请证书。完成后在“转发与节点”点击“修复失败项”；不必删除客户、重新注册节点或改变面板的 HTTPS 域名。
 
 Reality 默认目标/SNI 为 `www.tesla.com:443`，也可选 Amazon、Apple、Intel、AMD 或自定义。目标必须实际接受所选 SNI，预设本身不是防共享或防盗用手段；访问控制依赖每客户随机 UUID、shortId 等凭据。
 
@@ -170,6 +170,7 @@ curl -fsSL https://raw.githubusercontent.com/a2899882/NexusGate/main/scripts/age
 ng-agent-update
 ng-agent uninstall         # 新版 Agent 在目标机交互卸载
 ng-agent doctor            # 检查心跳、Xray 配置、服务及最近错误
+ng-agent cert              # 交互式申请、续签并同步面板
 ng-agent cert issue node.example.com admin@example.com
 ng-agent cert issue-cloudflare node.example.com admin@example.com /root/cloudflare.ini
 ng-agent cert import node.example.com /path/fullchain.pem /path/privkey.pem

@@ -93,7 +93,43 @@ test('Xray JSON counters are matched by name, including quoted values in either 
   ] });
   assert.deepEqual(parseUsageStats(output, resources), [{ resourceId:'resource-1', uplink:128, downlink:2048 }]);
   assert.deepEqual(parseUsageStats('{"stat":[]}', resources), []);
+  assert.deepEqual(parseUsageStats(JSON.stringify({ stat:[
+    { name:'inbound>>>unrelated>>>traffic>>>uplink', value:'bad' },
+    { name:'inbound>>>ng-in>>>traffic>>>uplink', value:'42' }
+  ] }), resources), [{ resourceId:'resource-1', uplink:42, downlink:0 }]);
+  assert.throws(() => parseUsageStats(JSON.stringify({ stat:[
+    { name:'inbound>>>ng-in>>>traffic>>>uplink', value:'-1' }
+  ] }), resources), /入口计数异常（负数）/);
   assert.throws(() => parseUsageStats('not json', resources));
+});
+
+test('Agent does not advertise an untrusted self-signed node certificate as ready', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexusgate-certs-'));
+  try {
+    const domain = 'entry.example.com';
+    const dir = path.join(temp, domain);
+    fs.mkdirSync(dir);
+    const result = require('node:child_process').spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-days', '2', '-keyout', path.join(dir, 'privkey.pem'), '-out', path.join(dir, 'fullchain.pem'),
+      '-subj', `/CN=${domain}`, '-addext', `subjectAltName=DNS:${domain}`], { encoding:'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const script = `process.stdout.write(JSON.stringify(require(${JSON.stringify(path.join(__dirname, '../agent/agent.js'))}).installedCertificates()))`;
+    const read = require('node:child_process').spawnSync(process.execPath, ['-e', script], {
+      env:{ ...process.env, NG_TLS_DIR:temp }, encoding:'utf8'
+    });
+    assert.equal(read.status, 0, read.stderr);
+    assert.deepEqual(JSON.parse(read.stdout), []);
+    const trusted = require('node:child_process').spawnSync(process.execPath, ['-e', script], {
+      env:{ ...process.env, NG_TLS_DIR:temp, SSL_CERT_FILE:path.join(dir, 'fullchain.pem') }, encoding:'utf8'
+    });
+    assert.equal(trusted.status, 0, trusted.stderr);
+    assert.deepEqual(JSON.parse(trusted.stdout), [domain]);
+    fs.writeFileSync(path.join(dir, 'privkey.pem'), 'not a private key');
+    const mismatch = require('node:child_process').spawnSync(process.execPath, ['-e', script], {
+      env:{ ...process.env, NG_TLS_DIR:temp, SSL_CERT_FILE:path.join(dir, 'fullchain.pem') }, encoding:'utf8'
+    });
+    assert.deepEqual(JSON.parse(mismatch.stdout), []);
+  } finally { fs.rmSync(temp, { recursive:true, force:true }); }
 });
 
 test('Agent reads cumulative counters without resetting Xray', () => {

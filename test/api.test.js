@@ -66,6 +66,13 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
     assert.equal(response.status, 201);
     agentKeys[server.id] = (await response.json()).agentKey;
   }
+  const certSync = await fetch(`${base}/api/agent/tls-domain`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[relay.id]}`, 'content-type':'application/json' },
+    body:JSON.stringify({ domain:'entry.example.com' }) });
+  assert.equal(certSync.status, 200);
+  assert.equal((await request('/api/servers')).servers.find((item) => item.id === relay.id).tlsDomain, 'entry.example.com');
+  const badCertSync = await fetch(`${base}/api/agent/tls-domain`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[relay.id]}`, 'content-type':'application/json' },
+    body:JSON.stringify({ domain:'invalid/domain' }) });
+  assert.equal(badCertSync.status, 400);
   await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[relay.id]}`, 'content-type':'application/json' },
     body:JSON.stringify({ version:'0.4.0', engine:{ status:'error', detail:'Xray config validation failed' } }) });
   // A broken core can be repaired by applying a new resource; keep the Agent job queue available.
@@ -253,8 +260,9 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   const oldAgent = await fetch(`${base}/api/chains/${anyChain.id}/deploy`, { method:'POST',
     headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:'{}' });
   assert.equal(oldAgent.status, 409);
+  assert.match((await oldAgent.json()).message, /入口证书未由 Agent 确认/);
   await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
-    body:JSON.stringify({ version:'0.6.1', engine:{ status:'ready', singBoxInstalled:true } }) });
+    body:JSON.stringify({ version:'0.6.2', engine:{ status:'ready', singBoxInstalled:true, certificates:['entry.example.com'] } }) });
   const anyDeploy = (await request(`/api/chains/${anyChain.id}/deploy`, 'POST', {})).deployments;
   const anyExitJob = await completeNext(agentKeys[exit.id]);
   assert.equal(anyExitJob.payload.resource.inbounds[0].protocol, 'vless');

@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -285,12 +285,36 @@ function systemInfo() {
 function engineHealth() {
   const xray = serviceHealth('nexusgate-xray');
   xray.singBoxInstalled = fs.existsSync(SINGBOX_BIN) && fs.existsSync(SINGBOX_STATS_BIN);
+  xray.certificates = installedCertificates();
   if (readResources().some((item) => item.engine === 'sing-box')) {
     const singbox = serviceHealth('nexusgate-sing-box');
     xray.singBoxStatus = singbox.status;
     if (singbox.status !== 'ready') return { ...xray, status: 'error', detail: `sing-box: ${singbox.detail}` };
   }
   return xray;
+}
+
+function installedCertificates() {
+  const root = process.env.NG_TLS_DIR || '/etc/nexusgate/tls';
+  let domains;
+  try { domains = fs.readdirSync(root).slice(0, 50); } catch { return []; }
+  return domains.filter((domain) => {
+    if (!/^(?:[a-z0-9-]+\.)+[a-z]{2,63}$/.test(domain)) return false;
+    const cert = path.join(root, domain, 'fullchain.pem');
+    const key = path.join(root, domain, 'privkey.pem');
+    if (!fs.existsSync(cert) || !fs.existsSync(key)) return false;
+    const expiry = spawnSync('openssl', ['x509', '-in', cert, '-noout', '-checkend', '86400'],
+      { encoding:'utf8', timeout:3000 });
+    const host = spawnSync('openssl', ['x509', '-in', cert, '-noout', '-checkhost', domain],
+      { encoding:'utf8', timeout:3000 });
+    if (expiry.status !== 0 || host.status !== 0 || !/does match/.test(host.stdout)) return false;
+    const verify = spawnSync('openssl', ['verify', '-verify_hostname', domain, '-untrusted', cert, cert],
+      { encoding:'utf8', timeout:3000 });
+    if (verify.status !== 0) return false;
+    const certKey = spawnSync('openssl', ['x509', '-in', cert, '-pubkey', '-noout'], { encoding:'utf8', timeout:3000 });
+    const privateKey = spawnSync('openssl', ['pkey', '-in', key, '-pubout'], { encoding:'utf8', timeout:3000 });
+    return certKey.status === 0 && privateKey.status === 0 && certKey.stdout.trim() === privateKey.stdout.trim();
+  });
 }
 
 function serviceHealth(service) {
@@ -308,11 +332,18 @@ async function heartbeat() {
 
 function parseUsageStats(output, resources) {
   const parsed = JSON.parse(output);
-  if (!parsed || !Array.isArray(parsed.stat || [])) throw new Error('Xray statsquery returned invalid JSON');
+  if (!parsed || !Array.isArray(parsed.stat)) throw new Error('统计接口返回的 JSON 缺少 stat 数组');
+  const expected = new Set(resources.flatMap((resource) => ['uplink', 'downlink']
+    .map((direction) => `inbound>>>${resource.meta.metricsTag}>>>traffic>>>${direction}`)));
   const byName = new Map();
-  for (const stat of parsed.stat || []) {
+  for (const stat of parsed.stat) {
+    if (!expected.has(stat.name)) continue;
     const value = Number(stat.value);
-    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid Xray counter: ${stat.name}`);
+    if (!Number.isSafeInteger(value) || value < 0 || stat.value === null || stat.value === '') {
+      const reason = typeof stat.value === 'string' && /^-?\d+$/.test(stat.value)
+        ? (stat.value.startsWith('-') ? '负数' : '超出安全整数范围') : `格式 ${typeof stat.value}`;
+      throw new Error(`入口计数异常（${reason}）：${stat.name}；请运行 ng-agent doctor 查看原始统计`);
+    }
     byName.set(stat.name, value);
   }
   return resources.flatMap((resource) => {
@@ -481,4 +512,4 @@ async function main() {
 if (require.main === module) main().catch((error) => { console.error(error); process.exit(1); });
 
 module.exports = { parseX25519, activateConfig, activateSingBox, combinedConfig, combinedSingBoxConfig, applyResource,
-  readObservations, readSingBoxObservations, parseUsageStats, queryUsage };
+  readObservations, readSingBoxObservations, parseUsageStats, queryUsage, installedCertificates };

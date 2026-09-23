@@ -19,7 +19,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -285,11 +285,39 @@ async function handleAgent(req, res, pathname) {
         server.engine = body.engine && ['ready','error'].includes(body.engine.status)
           ? { status: body.engine.status, detail: redactSecrets(cleanText(body.engine.detail, 400)),
             singBoxInstalled: body.engine.singBoxInstalled === true,
+            certificates: Array.isArray(body.engine.certificates) ? body.engine.certificates.slice(0, 50)
+              .map((value) => cleanText(value, 253).toLowerCase())
+              .filter((value) => /^(?:[a-z0-9-]+\.)+[a-z]{2,63}$/.test(value)) : [],
             singBoxStatus: body.engine.singBoxStatus === 'ready' ? 'ready' : 'inactive', at: nowIso() }
           : server.engine || null;
       }
     });
     sendJson(res, 200, { ok: true, serverTime: nowIso() });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/agent/tls-domain') {
+    const body = await readJson(req);
+    const domain = requiredText(body.domain, '节点 TLS 域名', 253).toLowerCase();
+    await store.transaction((data) => {
+      const server = data.servers.find((item) => item.id === agent.serverId);
+      if (!server) throw Object.assign(new Error('设备不存在'), { statusCode:404 });
+      normalizeServer({ tlsDomain:domain }, server);
+      if (server.tlsDomain && server.tlsDomain !== domain && data.deployments.some((item) =>
+        item.serverId === server.id && ['relay','direct'].includes(item.role) &&
+        ['anytls','hysteria2','vless-ws-tls'].includes(item.protocol) &&
+        ['active','queued','applying'].includes(item.status) && !item.archived)) {
+        throw Object.assign(new Error('设备已有使用其他域名的 TLS 节点；请先处理现有线路'), { statusCode:409 });
+      }
+      if (server.tlsDomain !== domain) {
+        server.tlsDomain = domain;
+        server.updatedAt = nowIso();
+        audit(data, `agent:${agent.id}`, 'set_tls_domain', server.id, { domain });
+      }
+      server.engine ||= {};
+      server.engine.certificates = [...new Set([...(server.engine.certificates || []), domain])];
+    });
+    sendJson(res, 200, { ok:true, domain });
     return true;
   }
 

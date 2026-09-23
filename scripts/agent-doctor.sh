@@ -6,6 +6,8 @@ set -u
 # Local root-owned configuration. Never print the enrollment key.
 source /etc/nexusgate/agent.env
 printf '控制面：%s\n' "${NG_CONTROLLER:-未配置}"
+printf '已验证节点证书：'
+node -e 'const domains=require("/opt/nexusgate-agent/agent.js").installedCertificates();console.log(domains.length?domains.join(", "):"暂无；运行 ng-agent cert")' 2>&1 || true
 printf 'Agent 版本：'
 node -p "require('fs').readFileSync('/opt/nexusgate-agent/agent.js','utf8').match(/const VERSION = '([^']+)'/)[1]" 2>/dev/null || printf '无法读取\n'
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
