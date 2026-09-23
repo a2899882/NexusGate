@@ -5,11 +5,12 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
 const SINGBOX_BIN = process.env.NG_SINGBOX_BIN || '/usr/local/bin/nexusgate-sing-box';
+const SINGBOX_STATS_BIN = process.env.NG_SINGBOX_STATS_BIN || '/usr/local/bin/nexusgate-sing-box-stats';
 const ROOT = process.env.NG_CONFIG_DIR || '/etc/nexusgate/xray';
 const RESOURCE_DIR = path.join(ROOT, 'resources');
 const CONFIG_FILE = path.join(ROOT, 'config.json');
@@ -150,7 +151,7 @@ function activateSingBox() {
     }
     return;
   }
-  if (!fs.existsSync(SINGBOX_BIN)) throw new Error('sing-box 未安装；请在入口机器运行 ng-agent engine install');
+  if (!fs.existsSync(SINGBOX_BIN) || !fs.existsSync(SINGBOX_STATS_BIN)) throw new Error('sing-box 及统计组件未安装；请在入口机器运行 ng-agent engine install');
   const candidate = `${SINGBOX_CONFIG}.candidate.json`;
   const previous = `${SINGBOX_CONFIG}.previous`;
   const next = `${JSON.stringify(combinedSingBoxConfig(resources), null, 2)}\n`;
@@ -283,7 +284,7 @@ function systemInfo() {
 
 function engineHealth() {
   const xray = serviceHealth('nexusgate-xray');
-  xray.singBoxInstalled = fs.existsSync(SINGBOX_BIN);
+  xray.singBoxInstalled = fs.existsSync(SINGBOX_BIN) && fs.existsSync(SINGBOX_STATS_BIN);
   if (readResources().some((item) => item.engine === 'sing-box')) {
     const singbox = serviceHealth('nexusgate-sing-box');
     xray.singBoxStatus = singbox.status;
@@ -349,7 +350,10 @@ function queryUsage() {
     const service = engine === 'xray' ? 'nexusgate-xray' : 'nexusgate-sing-box';
     const before = serviceEpoch(service);
     const port = engine === 'xray' ? (process.env.NG_XRAY_API_PORT || 10085) : (process.env.NG_SINGBOX_API_PORT || 10086);
-    const result = spawnSync(XRAY_BIN, ['api', 'statsquery', `--server=127.0.0.1:${port}`, '-pattern', 'inbound>>>'],
+    const binary = engine === 'xray' ? XRAY_BIN : SINGBOX_STATS_BIN;
+    const args = engine === 'xray' ? ['api', 'statsquery', `--server=127.0.0.1:${port}`, '-pattern', 'inbound>>>']
+      : [`--server=127.0.0.1:${port}`];
+    const result = spawnSync(binary, args,
       { encoding: 'utf8', timeout: 15000 });
     const after = serviceEpoch(service);
     if (before && after && before !== after) { errors.push(`${engine} restarted during statistics query`); continue; }

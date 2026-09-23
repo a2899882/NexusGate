@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.0'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.1'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);

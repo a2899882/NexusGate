@@ -29,6 +29,7 @@ if command -v rc-service >/dev/null; then
 fi
 
 rm -rf -- /opt/nexusgate-agent /etc/nexusgate /var/log/nexusgate
+rm -f -- /etc/logrotate.d/nexusgate-agent
 rm -f -- /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh
 rm -f -- /usr/local/sbin/ng-agent /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall /usr/local/sbin/ng-agent-doctor /usr/local/sbin/ng-agent-cert /usr/local/sbin/ng-agent-singbox /usr/local/bin/nexusgate-sing-box
 printf 'NexusGate Agent 与其资源已删除。系统共用的 Node.js、Xray 可执行文件和其他服务未删除。\n'

@@ -2,7 +2,7 @@
 
 面向多入口机、多出口机和多客户场景的轻量集中编排面板。一个控制面统一管理设备、客户额度、转发线路、单机节点、部署任务和客户端链接，不再逐台打开不同面板维护。
 
-> 当前版本：`v0.6.0`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
+> 当前版本：`v0.6.1`。请先在测试设备验证实际连接、客户端兼容性、云安全组和系统防火墙，再迁移业务。
 
 **升级到 AnyTLS：** 面板机运行 `ng update`，入口设备运行 `ng-agent update`（会尝试构建带流量统计接口的 sing-box）。如网络或 Go 构建失败，原 Xray 节点继续运行，在入口设备运行 `ng-agent engine install` 重试。执行 `ng-agent doctor` 确认 sing-box 已安装，再填写该入口的 TLS 域名、申请证书，创建 AnyTLS 线路；入口 TCP 端口需要在云安全组和防火墙开放。AnyTLS → VLESS TCP 可以部署，但第二段未加密；跨公网推荐选择 SS2022 出口传输。
 
@@ -57,6 +57,7 @@ flowchart TB
 - 每客户独立随机订阅地址，支持 V2Ray、Shadowrocket、通用 Base64、Mihomo/Clash 简洁版和智能分流版、sing-box JSON、Surge 兼容节点及原始 URI；二维码在浏览器本地生成。可重置地址，只分发已成功部署的节点，停用/到期/流量用尽时拒绝分发。
 - 入口/出口 Agent 可以在目标机通过 `ng-agent uninstall` 卸载专属服务、配置和密钥；控制台删除登记会撤销其访问资格。
 - Agent 支持 Debian/Ubuntu、RHEL 系 systemd，以及 Alpine OpenRC。
+- Agent 访问与错误日志由 logrotate 每日检查、最多保留 7 份，达到 20 MB 也会轮转；订阅访问记录仍按控制面 30 天/全局 10000 条清理。
 
 ## 协议矩阵
 

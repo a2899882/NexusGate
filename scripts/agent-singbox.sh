@@ -8,7 +8,8 @@ set -Eeuo pipefail
 # Official builds do not guarantee the optional V2Ray statistics API.
 version='v1.12.23'
 target='/usr/local/bin/nexusgate-sing-box'
-if [[ -x "$target" && "${2:-}" != '--force' ]]; then
+stats_target='/usr/local/bin/nexusgate-sing-box-stats'
+if [[ -x "$target" && -x "$stats_target" && "${2:-}" != '--force' ]]; then
   printf 'sing-box 已安装：%s（如需重装，运行 ng-agent-singbox install --force）\n' "$target"
   exit 0
 fi
@@ -31,13 +32,26 @@ printf '构建 sing-box %s（启用 V2Ray 统计 API，首次需下载 Go 依赖
 GOBIN="$build_dir" GOTOOLCHAIN=auto GOMAXPROCS=2 go install -p 2 -tags with_v2ray_api "github.com/sagernet/sing-box/cmd/sing-box@${version}"
 [[ -s "$build_dir/sing-box" ]] || { printf 'sing-box 构建失败\n' >&2; exit 1; }
 
+repo="${NG_REPO:-a2899882/NexusGate}"
+branch="${NG_BRANCH:-main}"
+curl -fL --retry 3 "https://raw.githubusercontent.com/${repo}/${branch}/agent/stats-query.go" -o "$build_dir/stats-query.go"
+( cd "$build_dir"
+  GOTOOLCHAIN=auto go mod init nexusgate/statsquery
+  GOTOOLCHAIN=auto go get "github.com/sagernet/sing-box@${version}"
+  GOTOOLCHAIN=auto GOMAXPROCS=2 go mod tidy
+  GOTOOLCHAIN=auto GOMAXPROCS=2 go build -p 2 -o "$build_dir/stats-query" stats-query.go
+)
+[[ -s "$build_dir/stats-query" ]] || { printf 'sing-box 统计组件构建失败\n' >&2; exit 1; }
+
 # A configuration with a statistics endpoint must pass validation before replacing a working binary.
 cat > "$build_dir/check.json" <<'EOF'
 {"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"experimental":{"v2ray_api":{"listen":"127.0.0.1:10086","stats":{"enabled":true,"inbounds":[]}}}}
 EOF
 "$build_dir/sing-box" check -c "$build_dir/check.json"
 install -m 0755 "$build_dir/sing-box" "$target.next"
+install -m 0755 "$build_dir/stats-query" "$stats_target.next"
 mv -f -- "$target.next" "$target"
+mv -f -- "$stats_target.next" "$stats_target"
 printf 'sing-box 统计版已安装：%s\n' "$target"
 if [[ -f /etc/nexusgate/sing-box/config.json ]]; then
   if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then

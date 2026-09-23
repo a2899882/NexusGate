@@ -133,6 +133,27 @@ test('sing-box config isolates AnyTLS from Xray and meters each entry once', () 
   [{ resourceId:'entry', uplink:10, downlink:90 }]);
 });
 
+test('Agent queries sing-box counters with its own helper and never resets them', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexusgate-singbox-usage-'));
+  try {
+    const dir = path.join(temp, 'xray');
+    fs.mkdirSync(path.join(dir, 'resources'), { recursive:true });
+    fs.writeFileSync(path.join(dir, 'resources', 'anytls.json'), JSON.stringify({
+      id:'anytls', engine:'sing-box', meta:{ kind:'direct', metricsTag:'any-in' }
+    }));
+    const helper = path.join(temp, 'stats');
+    const argumentsFile = path.join(temp, 'args');
+    fs.writeFileSync(helper, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argumentsFile)}\nprintf '{"stat":[{"name":"inbound>>>any-in>>>traffic>>>uplink","value":"1024"},{"name":"inbound>>>any-in>>>traffic>>>downlink","value":"4096"}]}'\n`, { mode:0o755 });
+    const script = `process.stdout.write(JSON.stringify(require(${JSON.stringify(path.join(__dirname, '../agent/agent.js'))}).queryUsage()))`;
+    const run = require('node:child_process').spawnSync(process.execPath, ['-e', script], {
+      env:{ ...process.env, NG_CONFIG_DIR:dir, NG_SINGBOX_STATS_BIN:helper, NG_XRAY_BIN:'/nonexistent/xray' }, encoding:'utf8'
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout).samples, [{ resourceId:'anytls', uplink:1024, downlink:4096, epoch:'sing-box:unknown' }]);
+    assert.deepEqual(fs.readFileSync(argumentsFile, 'utf8').trim().split('\n'), ['--server=127.0.0.1:10086']);
+  } finally { fs.rmSync(temp, { recursive:true, force:true }); }
+});
+
 test('AnyTLS IP observations require matching authenticated session and preserve partial lines', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexusgate-anytls-ip-'));
   try {

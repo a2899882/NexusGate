@@ -2,9 +2,9 @@
 set -Eeuo pipefail
 
 singbox="${NG_SINGBOX_BIN:-/usr/local/bin/nexusgate-sing-box}"
-xray="${NG_XRAY_BIN:-/usr/local/bin/xray}"
+stats="${NG_SINGBOX_STATS_BIN:-/usr/local/bin/nexusgate-sing-box-stats}"
 command -v "$singbox" >/dev/null || { printf 'sing-box binary missing\n' >&2; exit 1; }
-command -v "$xray" >/dev/null || { printf 'Xray binary missing\n' >&2; exit 1; }
+command -v "$stats" >/dev/null || { printf 'sing-box statistics helper missing\n' >&2; exit 1; }
 tmp="$(mktemp -d /tmp/nexusgate-anytls-smoke.XXXXXX)"
 server_pid='' client_pid='' http_pid=''
 cleanup() {
@@ -53,7 +53,7 @@ if [[ "$(cat "$tmp/response" 2>/dev/null || true)" != 'NexusGate AnyTLS smoke OK
   cat "$tmp/server.out" "$tmp/client.out" >&2
   exit 1
 fi
-"$xray" api statsquery --server=127.0.0.1:23457 -pattern 'inbound>>>' > "$tmp/stats.json"
+"$stats" --server=127.0.0.1:23457 > "$tmp/stats.json"
 NG_SMOKE_STATS="$tmp/stats.json" node <<'NODE'
 const stats = JSON.parse(require('node:fs').readFileSync(process.env.NG_SMOKE_STATS));
 const counters = new Map((stats.stat || []).map(item => [item.name, Number(item.value)]));

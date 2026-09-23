@@ -24,7 +24,7 @@ if [[ -x /usr/local/bin/nexusgate-sing-box ]]; then
   if [[ -f /etc/nexusgate/sing-box/config.json ]]; then
     /usr/local/bin/nexusgate-sing-box check -c /etc/nexusgate/sing-box/config.json 2>&1 | tail -n 12
     printf 'AnyTLS 入站流量统计（累计）：\n'
-    /usr/local/bin/xray api statsquery --server="127.0.0.1:${NG_SINGBOX_API_PORT:-10086}" -pattern 'inbound>>>' 2>&1 | head -c 900
+    /usr/local/bin/nexusgate-sing-box-stats --server="127.0.0.1:${NG_SINGBOX_API_PORT:-10086}" 2>&1 | head -c 900
     printf '\n'
   else
     printf '已安装，当前没有 AnyTLS 资源\n'

@@ -17,6 +17,7 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-cert.sh" -o "$tmp_dir/cert.sh"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-update.sh" -o "$tmp_dir/update.sh"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-singbox.sh" -o "$tmp_dir/singbox.sh"
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-logrotate.conf" -o "$tmp_dir/logrotate.conf"
 [[ -s "$tmp_dir/update.sh" ]] || die 'Agent 升级脚本下载不完整'
 node --check "$tmp_dir/agent.js"
 install -m 0644 "$tmp_dir/agent.js" /opt/nexusgate-agent/agent.js
@@ -25,6 +26,8 @@ install -m 0755 "$tmp_dir/uninstall.sh" /usr/local/sbin/ng-agent-uninstall
 install -m 0755 "$tmp_dir/doctor.sh" /usr/local/sbin/ng-agent-doctor
 install -m 0755 "$tmp_dir/cert.sh" /usr/local/sbin/ng-agent-cert
 install -m 0755 "$tmp_dir/singbox.sh" /usr/local/sbin/ng-agent-singbox
+install -d -m 0755 /etc/logrotate.d
+install -m 0644 "$tmp_dir/logrotate.conf" /etc/logrotate.d/nexusgate-agent
 install -m 0755 "$tmp_dir/update.sh" /usr/local/sbin/ng-agent-update.next
 mv -f -- /usr/local/sbin/ng-agent-update.next /usr/local/sbin/ng-agent-update
 cat > /usr/local/sbin/ng-agent <<'EOF'
@@ -40,6 +43,9 @@ case "${1:-}" in
 esac
 EOF
 chmod 0755 /usr/local/sbin/ng-agent
+if ! NG_REPO="$REPO" NG_BRANCH="$BRANCH" ng-agent-singbox install; then
+  info 'sing-box 构建未完成；Xray 节点正常。请修复 Go/网络后运行 ng-agent engine install。'
+fi
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/systemd/nexusgate-agent.service" -o /etc/systemd/system/nexusgate-agent.service
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/systemd/nexusgate-xray.service" -o /etc/systemd/system/nexusgate-xray.service
@@ -65,6 +71,3 @@ for _ in {1..35}; do
 done
 [[ -s /etc/nexusgate/last-heartbeat.json ]] || die 'Agent 已重启，但尚未连接控制面；请执行 ng-agent doctor'
 info "Agent 更新完成"
-if ! ng-agent-singbox install; then
-  info 'sing-box 构建未完成；Xray 节点正常。请修复 Go/网络后运行 ng-agent engine install。'
-fi

@@ -24,11 +24,11 @@ done
 [[ -n "$TOKEN" ]] || die "缺少 --token"
 if command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq && apt-get install -y -qq ca-certificates curl unzip nodejs openssl
+  apt-get update -qq && apt-get install -y -qq ca-certificates curl unzip nodejs openssl logrotate
 elif command -v dnf >/dev/null; then
-  dnf install -y ca-certificates curl unzip nodejs openssl
+  dnf install -y ca-certificates curl unzip nodejs openssl logrotate
 elif command -v apk >/dev/null; then
-  apk add --no-cache bash ca-certificates curl unzip nodejs openrc openssl
+  apk add --no-cache bash ca-certificates curl unzip nodejs openrc openssl logrotate
 else
   die "当前安装器支持 Debian/Ubuntu、RHEL 系和 Alpine"
 fi
@@ -58,6 +58,7 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-doctor.sh" -o /usr/local/sbin/ng-agent-doctor
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-cert.sh" -o /usr/local/sbin/ng-agent-cert
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-singbox.sh" -o /usr/local/sbin/ng-agent-singbox
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-logrotate.conf" -o /etc/logrotate.d/nexusgate-agent
 cat > /usr/local/sbin/ng-agent <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -78,9 +79,12 @@ if [[ ! -f /etc/nexusgate/xray/config.json ]]; then
   printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[]}\n' > /etc/nexusgate/xray/config.json
 fi
 chmod 0600 /etc/nexusgate/xray/config.json
+if ! NG_REPO="$REPO" NG_BRANCH="$BRANCH" ng-agent-singbox install; then
+  info 'sing-box 构建未完成；Xray 节点可正常使用。请检查网络与 Go 后运行 ng-agent engine install，再部署 AnyTLS。'
+fi
 
 info "向控制面注册"
-enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.0",system:{platform:process.platform,arch:process.arch}}))')"
+enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.1",system:{platform:process.platform,arch:process.arch}}))')"
 response="$(curl -fsS -H 'content-type: application/json' --data "$enroll_json" "${CONTROLLER%/}/api/agent/enroll")" || die "注册失败，请检查地址和令牌"
 agent_key="$(RESPONSE_VALUE="$response" node -e 'const r=JSON.parse(process.env.RESPONSE_VALUE); if(!r.agentKey) process.exit(1); process.stdout.write(r.agentKey)')" || die "控制面返回无效"
 
@@ -130,9 +134,6 @@ printf '\n\033[1;32mAgent 安装、注册和首次心跳完成（%s）。\033[0m
 printf '后续更新 Agent：ng-agent-update\n'
 printf '卸载 Agent：ng-agent uninstall\n'
 printf '检查 Agent 与 Xray：ng-agent doctor\n'
-if ! ng-agent-singbox install; then
-  info 'sing-box 构建未完成；Xray 节点可正常使用。请检查网络与 Go 后运行 ng-agent engine install，再部署 AnyTLS。'
-fi
 if [[ "$service_manager" == systemd ]] && ! systemctl is-active --quiet nexusgate-agent.service; then
   journalctl -u nexusgate-agent.service -n 35 --no-pager || true
   die 'Agent 注册已完成，但服务没有运行；请执行 ng-agent doctor 检查原因'

@@ -36,11 +36,14 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
           GOBIN="$RUNNER_TEMP/bin" GOMAXPROCS=2 go install -p 2 -tags with_v2ray_api github.com/sagernet/sing-box/cmd/sing-box@v1.12.23
-      - name: Download Xray query client
+      - name: Build sing-box statistics client
         run: |
-          curl -fL --retry 3 https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o "$RUNNER_TEMP/xray.zip"
-          unzip -q "$RUNNER_TEMP/xray.zip" xray -d "$RUNNER_TEMP/bin"
-          chmod +x "$RUNNER_TEMP/bin/xray"
+          cp agent/stats-query.go "$RUNNER_TEMP/stats-query.go"
+          cd "$RUNNER_TEMP"
+          go mod init nexusgate/statsquery
+          go get github.com/sagernet/sing-box@v1.12.23
+          GOMAXPROCS=2 go mod tidy
+          GOMAXPROCS=2 go build -p 2 -o "$RUNNER_TEMP/bin/sing-box-stats" stats-query.go
       - name: AnyTLS handshake and two-way traffic counters
         run: |
-          NG_SINGBOX_BIN="$RUNNER_TEMP/bin/sing-box" NG_XRAY_BIN="$RUNNER_TEMP/bin/xray" bash scripts/anytls-smoke.sh
+          NG_SINGBOX_BIN="$RUNNER_TEMP/bin/sing-box" NG_SINGBOX_STATS_BIN="$RUNNER_TEMP/bin/sing-box-stats" bash scripts/anytls-smoke.sh
