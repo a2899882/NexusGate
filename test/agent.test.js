@@ -93,10 +93,18 @@ test('Xray JSON counters are matched by name, including quoted values in either 
   ] });
   assert.deepEqual(parseUsageStats(output, resources), [{ resourceId:'resource-1', uplink:128, downlink:2048 }]);
   assert.deepEqual(parseUsageStats('{"stat":[]}', resources), []);
+  assert.deepEqual(parseUsageStats('{}', resources), []);
   assert.deepEqual(parseUsageStats(JSON.stringify({ stat:[
     { name:'inbound>>>unrelated>>>traffic>>>uplink', value:'bad' },
     { name:'inbound>>>ng-in>>>traffic>>>uplink', value:'42' }
   ] }), resources), [{ resourceId:'resource-1', uplink:42, downlink:0 }]);
+  assert.deepEqual(parseUsageStats(JSON.stringify({ stat:[
+    { name:'inbound>>>ng-in>>>traffic>>>uplink' },
+    { name:'inbound>>>ng-in>>>traffic>>>downlink', value:'1024' }
+  ] }), resources), [{ resourceId:'resource-1', uplink:0, downlink:1024 }]);
+  assert.throws(() => parseUsageStats(JSON.stringify({ stat:[
+    { name:'inbound>>>ng-in>>>traffic>>>uplink', value:'undefined' }
+  ] }), resources), /入口计数异常/);
   assert.throws(() => parseUsageStats(JSON.stringify({ stat:[
     { name:'inbound>>>ng-in>>>traffic>>>uplink', value:'-1' }
   ] }), resources), /入口计数异常（负数）/);

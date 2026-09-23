@@ -52,7 +52,7 @@ else
       const stats = JSON.parse(process.env.STATS_OUTPUT).stat || [];
       const entries = stats.filter(item => /^inbound>>>ng-.*>>>traffic>>>(uplink|downlink)$/.test(item.name));
       if (!entries.length) console.log("尚无入口流量计数；请确认客户端确实连接本机节点后再测试");
-      else for (const item of entries.slice(0, 24)) console.log(`${item.name}: ${item.value} B`);
+      else for (const item of entries.slice(0, 24)) console.log(`${item.name}: ${item.value === undefined ? 0 : item.value} B`);
     } catch { console.log("统计返回格式无效，请升级 Xray 和 Agent"); }
   '
 fi

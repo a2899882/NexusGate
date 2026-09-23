@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.6.2';
+const VERSION = '0.6.3';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -22,6 +22,7 @@ const ACCESS_LOG = process.env.NG_XRAY_ACCESS_LOG || '/var/log/nexusgate/xray-ac
 const CURSOR_FILE = process.env.NG_ACCESS_CURSOR || '/etc/nexusgate/access-cursor.json';
 const POLL_MS = Math.max(3, Number(process.env.NG_POLL_SECONDS || 8)) * 1000;
 let lastEngineError = '';
+let certificateCache = { fingerprint:'', checkedAt:0, domains:[] };
 
 function parseX25519(output) {
   const privateKey = (output.match(/\bPrivate\s*Key\s*:\s*([A-Za-z0-9_-]+)/i) || [])[1];
@@ -298,7 +299,16 @@ function installedCertificates() {
   const root = process.env.NG_TLS_DIR || '/etc/nexusgate/tls';
   let domains;
   try { domains = fs.readdirSync(root).slice(0, 50); } catch { return []; }
-  return domains.filter((domain) => {
+  const fingerprint = JSON.stringify(domains.map((domain) => {
+    try {
+      const cert = fs.statSync(path.join(root, domain, 'fullchain.pem'));
+      const key = fs.statSync(path.join(root, domain, 'privkey.pem'));
+      return [domain, cert.mtimeMs, cert.size, key.mtimeMs, key.size];
+    } catch { return [domain]; }
+  }));
+  if (certificateCache.fingerprint === fingerprint && Date.now() - certificateCache.checkedAt < 300000)
+    return [...certificateCache.domains];
+  const valid = domains.filter((domain) => {
     if (!/^(?:[a-z0-9-]+\.)+[a-z]{2,63}$/.test(domain)) return false;
     const cert = path.join(root, domain, 'fullchain.pem');
     const key = path.join(root, domain, 'privkey.pem');
@@ -315,6 +325,8 @@ function installedCertificates() {
     const privateKey = spawnSync('openssl', ['pkey', '-in', key, '-pubout'], { encoding:'utf8', timeout:3000 });
     return certKey.status === 0 && privateKey.status === 0 && certKey.stdout.trim() === privateKey.stdout.trim();
   });
+  certificateCache = { fingerprint, checkedAt:Date.now(), domains:valid };
+  return [...valid];
 }
 
 function serviceHealth(service) {
@@ -332,13 +344,16 @@ async function heartbeat() {
 
 function parseUsageStats(output, resources) {
   const parsed = JSON.parse(output);
-  if (!parsed || !Array.isArray(parsed.stat)) throw new Error('统计接口返回的 JSON 缺少 stat 数组');
+  if (!parsed || typeof parsed !== 'object' || (parsed.stat !== undefined && !Array.isArray(parsed.stat)))
+    throw new Error('统计接口返回的 JSON stat 格式无效');
   const expected = new Set(resources.flatMap((resource) => ['uplink', 'downlink']
     .map((direction) => `inbound>>>${resource.meta.metricsTag}>>>traffic>>>${direction}`)));
   const byName = new Map();
-  for (const stat of parsed.stat) {
+  for (const stat of parsed.stat || []) {
     if (!expected.has(stat.name)) continue;
-    const value = Number(stat.value);
+    // Protobuf JSON omits a scalar with its default value (zero). Xray can
+    // therefore return a named counter without a `value` field until traffic.
+    const value = Object.hasOwn(stat, 'value') ? Number(stat.value) : 0;
     if (!Number.isSafeInteger(value) || value < 0 || stat.value === null || stat.value === '') {
       const reason = typeof stat.value === 'string' && /^-?\d+$/.test(stat.value)
         ? (stat.value.startsWith('-') ? '负数' : '超出安全整数范围') : `格式 ${typeof stat.value}`;

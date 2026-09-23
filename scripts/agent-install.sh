@@ -79,12 +79,14 @@ if [[ ! -f /etc/nexusgate/xray/config.json ]]; then
   printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[]}\n' > /etc/nexusgate/xray/config.json
 fi
 chmod 0600 /etc/nexusgate/xray/config.json
-if ! NG_REPO="$REPO" NG_BRANCH="$BRANCH" ng-agent-singbox install; then
-  info 'sing-box 构建未完成；Xray 节点可正常使用。请检查网络与 Go 后运行 ng-agent engine install，再部署 AnyTLS。'
+if [[ "${NG_INSTALL_ANYTLS:-0}" == 1 ]]; then
+  NG_REPO="$REPO" NG_BRANCH="$BRANCH" ng-agent-singbox install || die 'AnyTLS 引擎安装失败；修复后运行 ng-agent engine install'
+else
+  info '基础节点只安装 Xray；需要 AnyTLS 时在入口机运行 ng-agent engine install。'
 fi
 
 info "向控制面注册"
-enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.2",system:{platform:process.platform,arch:process.arch}}))')"
+enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.3",system:{platform:process.platform,arch:process.arch}}))')"
 response="$(curl -fsS -H 'content-type: application/json' --data "$enroll_json" "${CONTROLLER%/}/api/agent/enroll")" || die "注册失败，请检查地址和令牌"
 agent_key="$(RESPONSE_VALUE="$response" node -e 'const r=JSON.parse(process.env.RESPONSE_VALUE); if(!r.agentKey) process.exit(1); process.stdout.write(r.agentKey)')" || die "控制面返回无效"
 

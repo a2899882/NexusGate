@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.2'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.3'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -17,7 +17,7 @@ const fmtBytes = (value) => {
   return `${size >= 10 || index === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[index]}`;
 };
 const oldUsageAgent = (version) => { const parts = String(version || '').match(/^(\d+)\.(\d+)\.(\d+)/); return parts &&
-  (Number(parts[1]) === 0 && (Number(parts[2]) < 5 || (Number(parts[2]) === 5 && Number(parts[3]) < 2))); };
+  Number(parts[1]) === 0 && (Number(parts[2]) < 6 || (Number(parts[2]) === 6 && Number(parts[3]) < 3)); };
 const splitList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 const statusText = {
   online:'在线', offline:'离线', pending:'待注册', active:'运行中', draft:'草稿', deploying:'部署中', queued:'排队中',
@@ -232,7 +232,7 @@ function serverForm(item = null) {
     <label>设备名称<input name="name" value="${esc(server.name || '')}" placeholder="新加坡入口 01" required></label><label>用途<select name="role"><option value="relay"${selected('relay',server.role)}>入口 / 转发</option><option value="exit"${selected('exit',server.role)}>出口 / 落地</option><option value="hybrid"${selected('hybrid',server.role)}>综合节点</option></select></label>
     <label>地区 / 分组<input name="region" value="${esc(server.region || '')}" placeholder="新加坡"></label><label>公网 IPv4 / 域名<input name="publicAddress" value="${esc(server.publicAddress || '')}" placeholder="203.0.113.10" required></label>
     <label>公网 IPv6（可选）<input name="publicAddressV6" value="${esc(server.publicAddressV6 || '')}" placeholder="2001:db8::10"></label><label>标签（逗号分隔）<input name="labels" value="${esc((server.labels || []).join(', '))}" placeholder="CN2, 高带宽, 主力"></label>
-    <label class="wide">节点 TLS 域名（AnyTLS / Hysteria 2 / VLESS WS TLS）<input name="tlsDomain" value="${esc(server.tlsDomain || '')}" placeholder="node.example.com"><small>在入口机运行 ng-agent cert，按提示输入域名与邮箱；证书签发后会自动同步到此设备。旧版 Agent 先运行 ng-agent update。仅作出口时无需填写。</small></label>
+    <label class="wide">节点 TLS 域名（AnyTLS / Hysteria 2 / VLESS WS TLS）<input name="tlsDomain" value="${esc(server.tlsDomain || '')}" placeholder="node.example.com"><small>在入口机运行 ng-agent update && ng-agent cert，按提示输入域名；DNS 验证需一次 CF API Token，HTTP 验证需公网 80/TCP。证书签发后会自动同步。仅作出口时无需填写。</small></label>
     <label>可用端口起点<input name="portRangeStart" type="number" value="${Number(server.portRangeStart || 20000)}" min="1024" max="65535" required></label><label>可用端口终点<input name="portRangeEnd" type="number" value="${Number(server.portRangeEnd || 50000)}" min="1024" max="65535" required></label>
     <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '添加设备'}</button></div></form>`);
 }

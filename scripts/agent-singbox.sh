@@ -16,6 +16,9 @@ fi
 
 build_dir="$(mktemp -d /tmp/nexusgate-singbox.XXXXXX)"
 trap 'rm -rf -- "$build_dir"' EXIT
+# Go's module and build caches can occupy hundreds of MB indefinitely on a
+# 1 GB relay. Keep this one-time build in the temporary directory instead.
+export GOMODCACHE="$build_dir/gomod" GOCACHE="$build_dir/gocache"
 go_version="$(go version 2>/dev/null || true)"
 go_major=0 go_minor=0
 if [[ "$go_version" =~ go([0-9]+)\.([0-9]+) ]]; then
@@ -36,7 +39,7 @@ if (( go_major < 1 || (go_major == 1 && go_minor < 23) )); then
   export PATH="$build_dir/go/bin:$PATH"
 fi
 printf '构建 sing-box %s（启用 V2Ray 统计 API，首次需下载 Go 依赖）...\n' "$version"
-GOBIN="$build_dir" GOTOOLCHAIN=auto GOMAXPROCS=2 go install -p 2 -tags with_v2ray_api "github.com/sagernet/sing-box/cmd/sing-box@${version}"
+GOBIN="$build_dir" GOTOOLCHAIN=auto GOMAXPROCS=1 go install -trimpath -ldflags='-s -w' -p 1 -tags with_v2ray_api "github.com/sagernet/sing-box/cmd/sing-box@${version}"
 [[ -s "$build_dir/sing-box" ]] || { printf 'sing-box 构建失败\n' >&2; exit 1; }
 
 repo="${NG_REPO:-a2899882/NexusGate}"
@@ -45,8 +48,8 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${repo}/${branch}/agent/st
 ( cd "$build_dir"
   GOTOOLCHAIN=auto go mod init nexusgate/statsquery
   GOTOOLCHAIN=auto go get "github.com/sagernet/sing-box@${version}"
-  GOTOOLCHAIN=auto GOMAXPROCS=2 go mod tidy
-  GOTOOLCHAIN=auto GOMAXPROCS=2 go build -p 2 -o "$build_dir/stats-query" stats-query.go
+  GOTOOLCHAIN=auto GOMAXPROCS=1 go mod tidy
+  GOTOOLCHAIN=auto GOMAXPROCS=1 go build -trimpath -ldflags='-s -w' -p 1 -o "$build_dir/stats-query" stats-query.go
 )
 [[ -s "$build_dir/stats-query" ]] || { printf 'sing-box 统计组件构建失败\n' >&2; exit 1; }
 

@@ -7,8 +7,8 @@ if [[ "$action" == setup ]]; then
   exec 3</dev/tty || { printf '交互式申请需要 SSH 终端；请使用 ng-agent cert issue 域名 邮箱\n' >&2; exit 1; }
   printf '节点证书一键申请（已在 Cloudflare 配置的入口域名）\n'
   read -r -p '节点域名（如 node.example.com）：' domain <&3
-  read -r -p '证书通知邮箱：' setup_email <&3
-  [[ "$setup_email" == *@* ]] || { printf '请输入有效邮箱\n' >&2; exit 1; }
+  read -r -p '证书通知邮箱（可留空，建议填写）：' setup_email <&3
+  [[ -z "$setup_email" || "$setup_email" == *@* ]] || { printf '请输入有效邮箱\n' >&2; exit 1; }
 fi
 [[ "$domain" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]] || { printf '请输入有效节点域名\n' >&2; exit 1; }
 domain="${domain,,}"
@@ -98,6 +98,13 @@ fi
 EOF
   chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh
   if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+    if systemctl is-enabled --quiet certbot.timer 2>/dev/null && systemctl start certbot.timer; then
+      # Distribution Certbot already runs renew. Keep only one scheduled job.
+      systemctl disable --now nexusgate-cert-renew.timer >/dev/null 2>&1 || true
+      printf '使用系统已有的 certbot.timer 自动续签。\n'
+      activate
+      return
+    fi
     cat > /etc/systemd/system/nexusgate-cert-renew.service <<'EOF'
 [Unit]
 Description=Renew NexusGate node TLS certificate
@@ -126,23 +133,64 @@ EOF
 }
 
 issue_http() {
+  local -a registration=(--non-interactive --agree-tos)
+  if [[ -n "$1" ]]; then registration+=(--email "$1"); else registration+=(--register-unsafely-without-email); fi
   install_certbot || return 1
   certbot certonly --standalone --preferred-challenges http --cert-name "$domain" \
-    --non-interactive --agree-tos --email "$1" -d "$domain" || return 1
+    "${registration[@]}" -d "$domain" || return 1
   activate_renewal
 }
 
+credential_token() {
+  local line
+  cf_token=''
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*dns_cloudflare_api_token[[:space:]]*=(.*)$ ]]; then
+      cf_token="${BASH_REMATCH[1]}"
+      cf_token="${cf_token#"${cf_token%%[![:space:]]*}"}"
+      cf_token="${cf_token%"${cf_token##*[![:space:]]}"}"
+      return 0
+    fi
+  done < "$1"
+  return 1
+}
+
+verify_cf_token() {
+  local token="$1"
+  [[ -n "$token" && "$token" != *[$'\r\n']* ]] || { printf 'CF Token 不能为空或包含换行\n' >&2; return 1; }
+  printf '%s' "$token" | node -e '
+    const fs = require("node:fs");
+    const token = fs.readFileSync(0, "utf8");
+    if (/\s/.test(token)) { console.error("请只粘贴 Cloudflare API Token 的值，不要粘贴 Bearer 前缀或整条 curl 命令"); process.exit(1); }
+    fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(12000)
+    }).then(async response => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.success || body.result?.status !== "active") {
+        const codes = (body.errors || []).map(item => item.code).filter(Number.isInteger).join(", ");
+        console.error(`Cloudflare Token 未通过验证（HTTP ${response.status}${codes ? `，代码 ${codes}` : ""}）。请到 My Profile → API Tokens 新建对应 Zone 的 Edit zone DNS Token，仅粘贴令牌值；不要使用 Global API Key。`);
+        process.exitCode = 1;
+      } else console.log("Cloudflare Token 已验证有效");
+    }).catch(error => { console.error(`无法连接 Cloudflare API 验证令牌：${error.cause?.code || error.name}；请检查出站网络`); process.exitCode = 2; });
+  '
+}
+
 issue_cloudflare() {
-  local credentials="$2"
+  local credentials="$2" cf_token
   [[ -f "$credentials" && -O "$credentials" ]] || { printf 'Cloudflare 凭据文件须由 root 拥有\n' >&2; return 1; }
   chmod 0600 "$credentials"
-  grep -Eq '^[[:space:]]*dns_cloudflare_api_token[[:space:]]*=' "$credentials" || {
+  credential_token "$credentials" || {
     printf '凭据文件须包含 dns_cloudflare_api_token = ...\n' >&2; return 1;
   }
+  verify_cf_token "$cf_token" || return 1
+  unset cf_token
   install_certbot || return 1
   install_cloudflare_plugin || return 1
-  certbot certonly --dns-cloudflare --dns-cloudflare-credentials "$credentials" --dns-cloudflare-propagation-seconds 30 \
-    --cert-name "$domain" --non-interactive --agree-tos --email "$1" -d "$domain" || return 1
+  local -a registration=(--non-interactive --agree-tos)
+  if [[ -n "$1" ]]; then registration+=(--email "$1"); else registration+=(--register-unsafely-without-email); fi
+  env -u CF_API_KEY -u CF_API_EMAIL -u CF_API_TOKEN -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_API_KEY -u CLOUDFLARE_EMAIL \
+    certbot certonly --dns-cloudflare --dns-cloudflare-credentials "$credentials" --dns-cloudflare-propagation-seconds 30 \
+    --cert-name "$domain" "${registration[@]}" -d "$domain" || return 1
   activate_renewal
 }
 
@@ -157,30 +205,37 @@ setup() {
     activate_renewal
     return
   fi
+  printf 'DNS 验证不需要公网 80 端口，但首次需输入一次 CF API Token；HTTP 验证无需 Token，但必须公网放行 80/TCP。\n'
+  local answer
   if port80_free; then
-    printf '80/TCP 空闲，可先尝试无需 CF 令牌的 HTTP 验证；需 DNS 灰云指向本机并在安全组放行 80/TCP。\n'
-    local answer
-    read -r -p '先尝试 HTTP 验证？[Y/n] ' answer <&3
-    if [[ ! "$answer" =~ ^[nN]$ ]]; then
+    read -r -p '验证方式：[1] Cloudflare DNS（推荐） [2] HTTP 80 端口，默认 1：' answer <&3
+    if [[ "$answer" == 2 ]]; then
       if issue_http "$setup_email"; then return; fi
-      printf 'HTTP 验证失败；改用 Cloudflare DNS 验证，需一次性输入受限 API Token。\n' >&2
+      printf 'HTTP 验证失败：检查 DNS 灰云、域名 A/AAAA 指向以及机器防火墙和服务商安全组的 80/TCP；可继续改用 DNS 验证。\n' >&2
     fi
   else
-    printf '本机 80/TCP 已占用，改用 Cloudflare DNS 验证（无需停止面板）。\n'
+    printf '本机 80/TCP 已占用，使用 Cloudflare DNS 验证。\n'
   fi
   local credentials="/etc/nexusgate/cloudflare/$domain.ini" cf_token
-  if [[ -f "$credentials" && -O "$credentials" ]] && grep -q '^dns_cloudflare_api_token' "$credentials"; then
-    printf '发现已保存的 Cloudflare 凭据：%s\n' "$credentials"
+  if [[ -f "$credentials" && -O "$credentials" ]] && credential_token "$credentials" && verify_cf_token "$cf_token"; then
+    printf '继续使用已保存的 Cloudflare 凭据。\n'
   else
-    printf '请使用 Cloudflare 仅限本 Zone 的 Zone:DNS:Edit API Token；输入不会回显。\n'
-    read -r -s -p 'CF API Token：' cf_token <&3
-    printf '\n'
-    [[ -n "$cf_token" && "$cf_token" != *$'\n'* ]] || { printf 'CF API Token 不能为空\n' >&2; return 1; }
+    printf '请到 Cloudflare → My Profile → API Tokens 创建 Edit zone DNS Token（只限此域名的 Zone），只粘贴 Token 值；输入不会回显。\n'
+    read -r -s -p 'CF API Token：' cf_token <&3; printf '\n'
+    cf_token="${cf_token#"${cf_token%%[![:space:]]*}"}"
+    cf_token="${cf_token%"${cf_token##*[![:space:]]}"}"
+    cf_token="${cf_token#Bearer }"
+    cf_token="${cf_token#bearer }"
+    cf_token="${cf_token#\"}"; cf_token="${cf_token%\"}"
+    verify_cf_token "$cf_token" || return 1
     install -d -m 0700 /etc/nexusgate/cloudflare
-    ( umask 077; printf 'dns_cloudflare_api_token = %s\n' "$cf_token" > "$credentials" )
-    chmod 0600 "$credentials"
-    unset cf_token
+    local credential_tmp
+    credential_tmp="$(mktemp "/etc/nexusgate/cloudflare/.${domain}.XXXXXX")"
+    chmod 0600 "$credential_tmp"
+    printf 'dns_cloudflare_api_token = %s\n' "$cf_token" > "$credential_tmp"
+    mv -f -- "$credential_tmp" "$credentials"
   fi
+  unset cf_token
   issue_cloudflare "$setup_email" "$credentials"
 }
 
