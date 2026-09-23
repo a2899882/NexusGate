@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -235,21 +235,26 @@ function queryUsage() {
 }
 
 function readObservations() {
-  if (!fs.existsSync(ACCESS_LOG)) return [];
+  if (!fs.existsSync(ACCESS_LOG)) return { observations: [], offset: null };
   let cursor = { offset: 0 };
   try { cursor = JSON.parse(fs.readFileSync(CURSOR_FILE, 'utf8')); } catch { /* first read */ }
   const stat = fs.statSync(ACCESS_LOG);
   if (stat.size < cursor.offset) cursor.offset = 0;
   const start = Math.max(cursor.offset, stat.size - 2 * 1024 * 1024);
-  if (start >= stat.size) return [];
+  if (start >= stat.size) return { observations: [], offset: null };
   const length = stat.size - start;
   const buffer = Buffer.alloc(length);
   const fd = fs.openSync(ACCESS_LOG, 'r');
   try { fs.readSync(fd, buffer, 0, length, start); } finally { fs.closeSync(fd); }
-  fs.writeFileSync(CURSOR_FILE, `${JSON.stringify({ offset: stat.size })}\n`, { mode: 0o600 });
-  const tagCustomers = new Map(readResources().filter((item) => item.meta && item.meta.metricsTag && item.meta.customerId).map((item) => [item.meta.metricsTag, item.meta.customerId]));
+  const finalNewline = buffer.lastIndexOf(10);
+  if (finalNewline < 0) return { observations: [], offset: null };
+  const offset = start + finalNewline + 1;
+  // The exit inbound sees relay server IPs, not client IPs. Never count those as customer devices.
+  const tagCustomers = new Map(readResources().filter((item) => item.meta &&
+    ['relay', 'direct'].includes(item.meta.kind) && item.meta.metricsTag && item.meta.customerId)
+    .map((item) => [item.meta.metricsTag, item.meta.customerId]));
   const unique = new Map();
-  for (const line of buffer.toString('utf8').split('\n')) {
+  for (const line of buffer.subarray(0, finalNewline).toString('utf8').split('\n')) {
     const source = line.match(/(?:from|accepted from)\s+(?:tcp|udp):(?:\[([^\]]+)\]|([^:\s]+)):\d+/i)
       || line.match(/\s(?:tcp:)?(?:\[([^\]]+)\]|((?:\d{1,3}\.){3}\d{1,3})):\d+\s+accepted\s/i);
     if (!source) continue;
@@ -258,7 +263,7 @@ function readObservations() {
       if (line.includes(`[${tag} ->`) || line.includes(`[${tag}]`)) unique.set(`${customerId}|${ip}`, { customerId, ip });
     }
   }
-  return [...unique.values()];
+  return { observations: [...unique.values()], offset };
 }
 
 async function usageLoop() {
@@ -267,8 +272,10 @@ async function usageLoop() {
     try {
       const samples = queryUsage();
       if (samples.length) await request('/api/agent/usage', { method: 'POST', body: JSON.stringify({ samples }) });
-      const observations = readObservations();
+      const { observations, offset } = readObservations();
       if (observations.length) await request('/api/agent/observations', { method: 'POST', body: JSON.stringify({ observations }) });
+      // A failed upload must not advance the cursor; retry the same log lines next cycle.
+      if (offset !== null) fs.writeFileSync(CURSOR_FILE, `${JSON.stringify({ offset })}\n`, { mode: 0o600 });
     } catch (error) { log('Usage report failed', error.message); }
   }
 }
@@ -298,4 +305,4 @@ async function main() {
 
 if (require.main === module) main().catch((error) => { console.error(error); process.exit(1); });
 
-module.exports = { parseX25519, activateConfig, combinedConfig, applyResource };
+module.exports = { parseX25519, activateConfig, combinedConfig, applyResource, readObservations };

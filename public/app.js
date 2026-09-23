@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.5.0'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.5.1'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -142,10 +142,10 @@ function renderCustomers() {
     const percent = item.trafficLimitBytes ? Math.min(100, Math.round(item.usedBytes / item.trafficLimitBytes * 100)) : 0;
     return `<tr><td><strong>${esc(item.name)}</strong><small>${esc(item.group || '未分组')}</small></td><td>${status(item.status)}</td>
       <td><strong>${fmtBytes(item.usedBytes)} / ${item.trafficLimitBytes ? fmtBytes(item.trafficLimitBytes) : '不限'}</strong><div class="progress"><i style="width:${percent}%"></i></div></td>
-      <td>${item.expiresAt ? fmtDate(item.expiresAt) : '不限期'}</td><td>${item.ipLimit || '不限'} IP<small>设备策略 ${item.deviceLimit || '不限'}（独立凭据阶段启用）</small></td><td>${tags(item.tags)}</td>
-      <td>${rowActions(item.id, `<button data-action="edit-customer" data-id="${esc(item.id)}">编辑</button><button data-action="customer-subscription" data-id="${esc(item.id)}">订阅</button>`, [['reset-usage','流量清零'],['toggle-customer',item.status === 'active' ? '停用' : '启用'],['delete-customer','删除客户']])}${item.pendingCleanup ? `<small>待清理 ${item.pendingCleanup} 项</small>` : ''}</td></tr>`;
+      <td>${item.expiresAt ? fmtDate(item.expiresAt) : '不限期'}</td><td>节点 IP ${item.observedIpCount || 0} / ${item.ipLimit || '不限'}<small>订阅客户端约 ${item.subscriptionClientCount || 0} / ${item.deviceLimit || '不限'}</small></td><td>${tags(item.tags)}</td>
+      <td>${rowActions(item.id, `<button data-action="edit-customer" data-id="${esc(item.id)}">编辑</button><button data-action="customer-subscription" data-id="${esc(item.id)}">订阅</button><button data-action="customer-access" data-id="${esc(item.id)}">访问</button>`, [['reset-usage','流量清零'],['toggle-customer',item.status === 'active' ? '停用' : '启用'],['delete-customer','删除客户']])}${item.pendingCleanup ? `<small>待清理 ${item.pendingCleanup} 项</small>` : ''}</td></tr>`;
   }).join('');
-  return `<div class="page-intro"><p>客户使用独立线路凭据。流量、到期日期、滚动 IP 上限会实际执行；设备数量需配合后续“一设备一凭据”机制。每位客户拥有可重置的订阅链接。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
+  return `<div class="page-intro"><p>节点 IP 在 Agent 上报后按滚动窗口统计，超限会停用客户；订阅客户端按最近 24 小时的客户端标识或 User-Agent 估算并限制订阅分发。点击“访问”查看记录。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
     <section class="panel"><div class="panel-head"><div class="toolbar"><input class="search" data-search placeholder="搜索客户、分组或标签" value="${esc(state.search)}"><span class="tag">${state.customers.length} 位</span></div></div>
     <div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>流量</th><th>到期</th><th>使用限制</th><th>标签</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="7">${empty('还没有客户','先创建客户，再编排线路')}</td></tr>`}</tbody></table></div></section>`;
 }
@@ -249,7 +249,7 @@ function customerForm(item = null) {
     <label>客户名称<input name="name" value="${esc(customer.name || '')}" required></label><label>分组<input name="group" value="${esc(customer.group || '')}" placeholder="华南团队"></label>
     <label>流量上限（GB，0 不限）<input name="trafficGb" type="number" min="0" step="0.01" value="${Number(customer.trafficLimitBytes || 0) / 1024 ** 3}"></label><label>快速到期<select data-expiry-quick><option value="">自定义 / 不限</option><option value="7">7 天后</option><option value="30">30 天后</option><option value="90">90 天后</option><option value="365">1 年后</option></select></label>
     <label>到期日期<input name="expiryDate" type="date" value="${esc(expiry.date)}"><small>留空表示不限期，不再需要手工输入日期格式。</small></label><label>到期时间<select name="expiryTime">${timeOptions(expiry.time)}</select></label>
-    <label>滚动 IP 上限<input name="ipLimit" type="number" min="0" step="1" value="${Number(customer.ipLimit || 0)}"><small>0 表示不限，按观察窗口统计。</small></label><label>设备策略上限<input name="deviceLimit" type="number" min="0" step="1" value="${Number(customer.deviceLimit || 0)}"><small>为“一设备一凭据”预留，当前不强制。</small></label>
+    <label>滚动节点 IP 上限<input name="ipLimit" type="number" min="0" step="1" value="${Number(customer.ipLimit || 0)}"><small>0 不限；Agent 每分钟上报，超限后暂停客户和节点。</small></label><label>订阅客户端估计上限<input name="deviceLimit" type="number" min="0" step="1" value="${Number(customer.deviceLimit || 0)}"><small>0 不限；24 小时内按客户端标识或 User-Agent 计数，只拦截新订阅请求，无法限制已导入的节点。</small></label>
     <label class="wide">标签（逗号分隔）<input name="tags" value="${esc((customer.tags || []).join(', '))}"></label><label class="wide">备注<textarea name="notes">${esc(customer.notes || '')}</textarea></label>
     <div class="form-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">${item ? '保存修改' : '创建客户'}</button></div></form>`);
 }
@@ -275,8 +275,18 @@ function subscriptionModal(customer) {
   modal('CLIENT SUBSCRIPTION', `${customer.name} · 订阅链接`, `<div class="stack"><div class="notice">仅展示已成功部署的入口节点。客户停用、到期或流量用尽时链接停止分发。重置令牌会立即使旧订阅地址失效；已复制的节点凭据仍需停用或重建线路才能撤销。</div>
     ${formats.map(([format,label]) => { const url = `${location.origin}/s/${customer.subscriptionToken}/${format}`; return `<div class="subscription-row"><div><b>${esc(label)}</b><code title="${esc(url)}">${esc(url)}</code></div><div class="subscription-actions"><button type="button" data-action="copy-uri" data-value="${esc(url)}">复制</button><button type="button" data-action="qr-uri" data-value="${esc(url)}" aria-label="显示${esc(label)}二维码">二维码</button></div><div class="subscription-qr" hidden></div></div>`; }).join('')}
     <div class="field-note">二维码在当前浏览器本地生成，不向第三方图片服务发送订阅令牌。Surge 只包含它原生支持的节点协议。</div>
-    <div class="notice warning">IP 限制按滚动观察窗口执行；同一节点链接可复制，设备数量策略当前尚不能可靠识别物理设备。请勿将订阅地址公开。</div>
+    <div class="notice warning">订阅客户端数按客户端标识或 User-Agent 估算，不能证明物理设备数量；共享节点链接可复制，订阅请求被拒后已导入节点仍可连接。节点 IP 超限需要等待 Agent 上报和清理任务。</div>
     <div class="form-actions"><button class="danger" data-action="rotate-subscription" data-id="${esc(customer.id)}">重置订阅地址</button><button data-close>关闭</button></div></div>`);
+}
+
+async function customerAccessModal(customer) {
+  const data = await api(`/api/customers/${customer.id}/access`);
+  const ips = data.observedIps.map((item) => `<tr><td><code>${esc(item.ip)}</code></td><td>${fmtDate(item.firstSeenAt)}</td><td>${fmtDate(item.lastSeenAt)}</td></tr>`).join('');
+  const logs = data.events.map((item) => `<tr><td>${fmtDate(item.at)}</td><td><span class="status ${item.status === 200 ? 'active' : 'failed'}">${item.status === 200 ? '已返回' : `${item.status} ${esc(item.reason)}`}</span></td><td>${esc(item.ip)}<small title="${esc(item.userAgent)}">${esc(item.userAgent || '未提供 User-Agent')}</small></td><td>${esc(item.format)}</td><td>${fmtBytes(item.bytes)}</td></tr>`).join('');
+  modal('ACCESS ACTIVITY', `${customer.name} · 访问记录`, `<div class="stack"><div class="notice">节点 IP：${data.observedIps.length} / ${data.limits.ip || '不限'}（滚动观察窗口）；订阅客户端约：${data.subscriptionClients} / ${data.limits.subscriptionClients || '不限'}（最近 24 小时）。订阅统计不能识别物理设备；同一 User-Agent 可能来自多台设备，客户端升级也可能改变 User-Agent。</div>
+    <div><b>节点观测 IP</b><div class="table-wrap access-table"><table><thead><tr><th>IP</th><th>首次</th><th>最后</th></tr></thead><tbody>${ips || '<tr><td colspan="3">当前窗口没有 Agent 上报</td></tr>'}</tbody></table></div></div>
+    <div><b>最近订阅请求（最多 100 条）</b><div class="table-wrap access-table"><table><thead><tr><th>时间</th><th>结果</th><th>来源 / 客户端</th><th>格式</th><th>返回</th></tr></thead><tbody>${logs || '<tr><td colspan="5">暂无访问记录</td></tr>'}</tbody></table></div></div>
+    <div class="form-actions"><button class="danger" data-action="reset-access" data-id="${esc(customer.id)}">清空订阅访问窗口</button><button data-close>关闭</button></div></div>`);
 }
 
 function chainForm(item = null) {
@@ -374,6 +384,11 @@ document.addEventListener('click', async (event) => {
     else if (action === 'add-customer') customerForm();
     else if (action === 'edit-customer') customerForm(state.customers.find((item) => item.id === itemId));
     else if (action === 'customer-subscription') subscriptionModal(state.customers.find((item) => item.id === itemId));
+    else if (action === 'customer-access') await customerAccessModal(state.customers.find((item) => item.id === itemId));
+    else if (action === 'reset-access' && confirm('清空此客户的订阅访问日志和最近 24 小时的客户端估计数？节点 IP 观察记录不受影响。')) {
+      await api(`/api/customers/${itemId}/access`, { method:'DELETE' });
+      toast('订阅访问窗口已清空'); await load('customers'); await customerAccessModal(state.customers.find((item) => item.id === itemId));
+    }
     else if (action === 'rotate-subscription' && confirm('旧订阅地址会立刻失效。已导入的节点凭据不会随订阅令牌重置，确认继续？')) {
       const result = await api(`/api/customers/${itemId}/rotate-subscription`, { method:'POST', body:'{}' });
       state.customers = state.customers.map((item) => item.id === itemId ? result.customer : item);

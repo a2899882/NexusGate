@@ -26,3 +26,20 @@ test('store rejects an invalid replacement', async (t) => {
   await assert.rejects(() => store.replace({ schemaVersion: 99 }), /Unsupported or corrupt/);
   assert.equal(store.data.schemaVersion, 1);
 });
+
+test('older backups without subscription logs remain restorable', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'nexusgate-store-'));
+  t.after(() => fs.promises.rm(dir, { recursive:true, force:true }));
+  const file = path.join(dir, 'data.json');
+  const store = await new Store(file).init();
+  const oldBackup = store.snapshot();
+  delete oldBackup.subscriptionAccess;
+  delete oldBackup.subscriptionClients;
+  await store.replace(oldBackup);
+  assert.deepEqual(store.data.subscriptionAccess, []);
+  assert.deepEqual(store.data.subscriptionClients, []);
+  await fs.promises.writeFile(file, JSON.stringify(oldBackup));
+  const loaded = await new Store(file).init();
+  assert.deepEqual(loaded.data.subscriptionAccess, []);
+  assert.deepEqual(loaded.data.subscriptionClients, []);
+});

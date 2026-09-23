@@ -88,7 +88,7 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   const changed = await request(`/api/chains/${chain.id}`, 'PATCH', { realityServerName: 'www.tesla.com' });
   assert.equal(changed.requiresRedeploy, true);
   assert.equal(changed.chain.status, 'changes_pending');
-  const customerB = (await request('/api/customers', 'POST', { name: '客户 B' })).customer;
+  const customerB = (await request('/api/customers', 'POST', { name: '客户 B', ipLimit: 1, deviceLimit: 1 })).customer;
   const direct = (await request('/api/chains', 'POST', { name: 'IPv6 单机节点', topology: 'direct', networkMode: 'ipv6', relayServerIds: [relay.id], customerIds: [customerB.id], relayProtocol: 'shadowsocks-2022-aes256' })).chain;
   const directDeploy = await request(`/api/chains/${direct.id}/deploy`, 'POST', {});
   assert.equal(directDeploy.deployments.length, 1);
@@ -126,6 +126,30 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.notEqual(rotated.subscriptionToken, customerB.subscriptionToken);
   assert.equal((await fetch(`${base}/s/${customerB.subscriptionToken}/raw`)).status, 404);
   assert.equal((await fetch(`${base}/s/${rotated.subscriptionToken}/raw`)).status, 200);
+  const extraClient = await fetch(`${base}/s/${rotated.subscriptionToken}/raw`, { headers: { 'x-device-id': 'another-client', 'user-agent': 'Other Client/1.0' } });
+  assert.equal(extraClient.status, 429);
+  const access = await request(`/api/customers/${customerB.id}/access`);
+  assert.equal(access.subscriptionClients, 1);
+  assert.ok(access.events.some((item) => item.status === 429 && item.reason.includes('超限')));
+  assert.ok(access.events.some((item) => item.status === 200 && item.bytes > 0));
+  assert.ok(access.events.every((item) => !('clientKey' in item)));
+  assert.equal((await request('/api/customers')).customers.find((item) => item.id === customerB.id).subscriptionClientCount, 1);
+  await request(`/api/customers/${customerB.id}/access`, 'DELETE');
+  assert.equal((await request(`/api/customers/${customerB.id}/access`)).events.length, 0);
+  assert.equal((await fetch(`${base}/s/${rotated.subscriptionToken}/raw`, { headers: { 'x-device-id': 'another-client' } })).status, 200);
+
+  // Exit-server source addresses belong to relay machines, never to client IP quota.
+  await fetch(`${base}/api/agent/observations`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[exit.id]}`, 'content-type':'application/json' },
+    body: JSON.stringify({ observations: [{ customerId:customerB.id, ip:'198.51.100.1' }] }) });
+  assert.equal((await request(`/api/customers/${customerB.id}/access`)).observedIps.length, 0);
+  const observed = await fetch(`${base}/api/agent/observations`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
+    body: JSON.stringify({ observations: [{ customerId:customerB.id, ip:'203.0.113.1' }] }) });
+  assert.equal(observed.status, 200);
+  assert.equal((await request(`/api/customers/${customerB.id}/access`)).observedIps.length, 1);
+  const excessIp = await fetch(`${base}/api/agent/observations`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
+    body: JSON.stringify({ observations: [{ customerId:customerB.id, ip:'203.0.113.2' }] }) });
+  assert.equal(excessIp.status, 200);
+  assert.equal((await request('/api/customers')).customers.find((item) => item.id === customerB.id).suspendReason, 'ip_limit');
 
   // A failed / not-yet-applied route can disappear from the UI immediately,
   // while cleanup tombstones retain the ports until agents acknowledge removal.

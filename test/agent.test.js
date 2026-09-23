@@ -36,3 +36,28 @@ test('Xray candidate configuration has a JSON extension at validation time', () 
     assert.equal(JSON.parse(fs.readFileSync(candidate, 'utf8')).inbounds[0].tag, 'api-in');
   } finally { fs.rmSync(temp, { recursive:true, force:true }); }
 });
+
+test('IP observations exclude exit hop addresses and leave partial log lines unread', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexusgate-observations-'));
+  try {
+    const dir = path.join(temp, 'config');
+    fs.mkdirSync(path.join(dir, 'resources'), { recursive:true });
+    fs.writeFileSync(path.join(dir, 'resources', 'relay.json'), JSON.stringify({ id:'relay', meta:{ kind:'relay', metricsTag:'entry-tag', customerId:'customer-a' } }));
+    fs.writeFileSync(path.join(dir, 'resources', 'exit.json'), JSON.stringify({ id:'exit', meta:{ kind:'exit', metricsTag:'exit-tag', customerId:'customer-a' } }));
+    const accessLog = path.join(temp, 'access.log');
+    const cursorFile = path.join(temp, 'cursor.json');
+    const entry = '2026/09/23 from tcp:198.51.100.40:1234 accepted tcp:example.com:443 [entry-tag -> direct]';
+    const exit = '2026/09/23 from tcp:192.0.2.20:3344 accepted tcp:example.com:443 [exit-tag -> direct]';
+    fs.writeFileSync(accessLog, `${entry}\n${exit}\n${entry.slice(0, 28)}`);
+    const { spawnSync } = require('node:child_process');
+    const script = `process.stdout.write(JSON.stringify(require(${JSON.stringify(path.join(__dirname, '../agent/agent.js'))}).readObservations()))`;
+    const run = spawnSync(process.execPath, ['-e', script], {
+      env:{ ...process.env, NG_CONFIG_DIR:dir, NG_XRAY_ACCESS_LOG:accessLog, NG_ACCESS_CURSOR:cursorFile }, encoding:'utf8'
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const result = JSON.parse(run.stdout);
+    assert.deepEqual(result.observations, [{ customerId:'customer-a', ip:'198.51.100.40' }]);
+    assert.equal(result.offset, Buffer.byteLength(`${entry}\n${exit}\n`));
+    assert.equal(fs.existsSync(cursorFile), false);
+  } finally { fs.rmSync(temp, { recursive:true, force:true }); }
+});

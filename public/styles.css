@@ -91,6 +91,10 @@ table{font-size:13px}th{font-size:11px;letter-spacing:.02em}td strong{font-size:
 .error-detail{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--danger)}
 .subscription-row{flex-wrap:wrap;background:var(--surface)}
 .subscription-row>div:first-child{flex:1 1 310px}
+.access-table{max-height:280px;overflow:auto;margin-top:10px;border:1px solid var(--line);border-radius:10px}
+.access-table table{min-width:610px}
+.access-table td{padding:9px 12px}
+.access-table td small{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .subscription-actions{display:flex;gap:5px;flex:0 0 auto}
 .subscription-qr{flex:1 0 100%;text-align:center;padding:14px;border-top:1px solid var(--line)}
 .subscription-qr[hidden]{display:none}

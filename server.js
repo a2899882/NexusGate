@@ -11,6 +11,7 @@ const { PROFILE_CATALOG, REALITY_PRESETS, validateEntryProtocol, validateProtoco
 const { Orchestrator, audit, id, nowIso } = require('./lib/orchestrator');
 const { formatSubscription } = require('./lib/subscriptions');
 const { redactSecrets } = require('./lib/redact');
+const { clientIdentity, activeClients, observedIps, pruneAccess } = require('./lib/access');
 
 const APP_ROOT = __dirname;
 const PUBLIC_DIR = path.join(APP_ROOT, 'public');
@@ -18,7 +19,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -121,7 +122,9 @@ function publicServer(item) {
 }
 
 function publicCustomer(item) {
-  return { ...item, pendingCleanup: store.data.deployments.filter((entry) => entry.customerId === item.id && entry.archived && entry.status !== 'deleted').length };
+  return { ...item, pendingCleanup: store.data.deployments.filter((entry) => entry.customerId === item.id && entry.archived && entry.status !== 'deleted').length,
+    observedIpCount: observedIps(store.data, item.id).length,
+    subscriptionClientCount: activeClients(store.data, item.id).length };
 }
 
 function getIp(req) {
@@ -325,7 +328,8 @@ async function handleAgent(req, res, pathname) {
       for (const sample of Array.isArray(body.observations) ? body.observations.slice(0, 1000) : []) {
         const customerId = cleanText(sample.customerId, 100);
         const ip = cleanText(sample.ip, 64).replace(/^\[|\]$/g, '');
-        if (!net.isIP(ip) || !data.customers.some((item) => item.id === customerId)) continue;
+        if (!net.isIP(ip) || !data.deployments.some((item) => item.serverId === agent.serverId &&
+          item.customerId === customerId && ['relay', 'direct'].includes(item.role) && item.status === 'active' && !item.archived)) continue;
         const existing = data.observations.find((item) => item.customerId === customerId && item.ip === ip);
         if (existing) existing.lastSeenAt = nowIso();
         else data.observations.push({ id: id('obs'), customerId, ip, firstSeenAt: nowIso(), lastSeenAt: nowIso() });
@@ -517,6 +521,25 @@ async function handleAdminApi(req, res, pathname) {
     sendJson(res, 200, { customers: store.data.customers.map(publicCustomer) });
     return true;
   }
+  const accessRoute = route('/api/customers/:id/access', pathname);
+  if (accessRoute && req.method === 'GET') {
+    const customer = store.data.customers.find((item) => item.id === accessRoute.id);
+    if (!customer) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
+    sendJson(res, 200, { limits: { ip: customer.ipLimit, subscriptionClients: customer.deviceLimit },
+      observedIps: observedIps(store.data, customer.id).map(({ ip, firstSeenAt, lastSeenAt }) => ({ ip, firstSeenAt, lastSeenAt })),
+      subscriptionClients: activeClients(store.data, customer.id).length,
+      events: store.data.subscriptionAccess.filter((item) => item.customerId === customer.id).slice(-100).reverse().map(({ clientKey, ...event }) => event) });
+    return true;
+  }
+  if (accessRoute && req.method === 'DELETE') {
+    await store.transaction((data) => {
+      if (!data.customers.some((item) => item.id === accessRoute.id)) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
+      data.subscriptionAccess = data.subscriptionAccess.filter((item) => item.customerId !== accessRoute.id);
+      data.subscriptionClients = data.subscriptionClients.filter((item) => item.customerId !== accessRoute.id);
+      audit(data, actor, 'reset_subscription_access', accessRoute.id);
+    });
+    sendJson(res, 200, { ok: true }); return true;
+  }
   if (req.method === 'POST' && pathname === '/api/customers') {
     const body = await readJson(req);
     const customer = await store.transaction((data) => {
@@ -605,6 +628,9 @@ async function handleAdminApi(req, res, pathname) {
         throw Object.assign(new Error('客户仍有活动部署。请先停用并删除关联线路'), { statusCode: 409 });
       }
       data.customers.splice(index, 1);
+      data.subscriptionAccess = data.subscriptionAccess.filter((item) => item.customerId !== customerItem.id);
+      data.subscriptionClients = data.subscriptionClients.filter((item) => item.customerId !== customerItem.id);
+      data.observations = data.observations.filter((item) => item.customerId !== customerItem.id);
       // Archived cleanup records contain resource IDs and can finish without a customer row.
       audit(data, actor, 'delete_customer', customerItem.id, { pendingCleanup: data.deployments.filter((item) => item.customerId === customerItem.id && item.archived && item.status !== 'deleted').length });
     });
@@ -718,7 +744,7 @@ async function handleAdminApi(req, res, pathname) {
   return false;
 }
 
-function handleSubscription(req, res, pathname) {
+async function handleSubscription(req, res, pathname) {
   const match = /^\/s\/([A-Za-z0-9_-]{32,100})\/(auto|raw|base64|v2ray|shadowrocket|clash|clash-smart|mihomo|singbox|surge)$/.exec(pathname);
   if (!match) return false;
   const headers = { 'cache-control':'no-store, private', 'x-robots-tag':'noindex, nofollow', 'vary':'User-Agent' };
@@ -728,14 +754,46 @@ function handleSubscription(req, res, pathname) {
   const customer = store.data.customers.find((item) => item.subscriptionToken && Buffer.byteLength(item.subscriptionToken) === token.length &&
     crypto.timingSafeEqual(Buffer.from(item.subscriptionToken), token));
   if (!customer) { sendJson(res, 404, { message:'订阅链接不存在或已重置' }, headers); return true; }
+  const identity = clientIdentity(req.headers, store.data.createdAt);
+  const access = { id: id('acc'), customerId: customer.id, at: nowIso(), ip: getIp(req),
+    userAgent: identity.userAgent, identityType: identity.kind, clientKey: identity.key,
+    format: match[2], status: 0, reason: '', bytes: 0 };
   if (customer.status !== 'active' || (customer.expiresAt && Date.parse(customer.expiresAt) <= Date.now()) ||
     (customer.trafficLimitBytes > 0 && customer.usedBytes >= customer.trafficLimitBytes)) {
+    access.status = 403; access.reason = '客户停用、到期或流量用尽';
+    await store.transaction((data) => { data.subscriptionAccess.push(access); pruneAccess(data); });
     sendJson(res, 403, { message:'客户已停用、到期或流量用尽' }, headers); return true;
   }
   const format = ({ v2ray:'base64', shadowrocket:'base64', mihomo:'clash-smart' })[match[2]] || match[2];
   const result = formatSubscription(store.data, customer, format, String(req.headers['user-agent'] || ''));
-  if (!result) { sendJson(res, 503, { message:'当前没有部署成功的入口节点' }, headers); return true; }
+  if (!result) {
+    access.status = 503; access.reason = '没有已部署的入口节点';
+    await store.transaction((data) => { data.subscriptionAccess.push(access); pruneAccess(data); });
+    sendJson(res, 503, { message:'当前没有部署成功的入口节点' }, headers); return true;
+  }
   const body = Buffer.from(result.body);
+  const allowed = await store.transaction((data) => {
+    const current = data.customers.find((item) => item.id === customer.id);
+    // Serialize the check with the write so concurrent refreshes cannot take extra slots.
+    const clients = activeClients(data, customer.id);
+    const permitted = current && current.subscriptionToken === match[1] && current.status === 'active' &&
+      (!current.expiresAt || Date.parse(current.expiresAt) > Date.now()) &&
+      (!(current.trafficLimitBytes > 0) || current.usedBytes < current.trafficLimitBytes) &&
+      (!current.deviceLimit || clients.includes(identity.key) || clients.length < current.deviceLimit);
+    access.status = permitted ? 200 : 429;
+    access.reason = permitted ? '已返回' : '订阅客户端估计数超限';
+    access.bytes = permitted ? body.length : 0;
+    if (permitted) {
+      const session = data.subscriptionClients.find((item) => item.customerId === customer.id && item.clientKey === identity.key);
+      if (session) session.lastSeenAt = access.at;
+      else data.subscriptionClients.push({ customerId: customer.id, clientKey: identity.key, identityType: identity.kind,
+        firstSeenAt: access.at, lastSeenAt: access.at });
+    }
+    data.subscriptionAccess.push(access);
+    pruneAccess(data);
+    return permitted;
+  });
+  if (!allowed) { sendJson(res, 429, { message:'订阅客户端数达到上限。可在客户访问记录中检查并重置观察窗口。' }, headers); return true; }
   res.writeHead(200, { ...headers, 'content-type':result.contentType, 'content-length':body.length,
     'subscription-userinfo':`upload=${Math.max(0, Math.floor(customer.usedBytes || 0))}; download=0; total=${Math.max(0, Math.floor(customer.trafficLimitBytes || 0))}; expire=${customer.expiresAt ? Math.floor(Date.parse(customer.expiresAt) / 1000) : 0}` });
   res.end(body);
@@ -753,7 +811,7 @@ async function requestHandler(req, res) {
     }
     if (await handleAuth(req, res, pathname)) return;
     if (await handleAgent(req, res, pathname)) return;
-    if (handleSubscription(req, res, pathname)) return;
+    if (await handleSubscription(req, res, pathname)) return;
     if (await handleAdminApi(req, res, pathname)) return;
     if (req.method === 'GET' && await serveStatic(PUBLIC_DIR, pathname, res)) return;
     if (req.method === 'GET' && !pathname.startsWith('/api/')) {
@@ -812,6 +870,7 @@ async function housekeeping() {
       data.jobs = data.jobs.filter((job) => !['completed', 'failed'].includes(job.status) || new Date(job.updatedAt).getTime() > jobCutoff);
       const activityCutoff = now - (data.settings.activityRetentionDays || 30) * 86400000;
       data.activity = data.activity.filter((event) => new Date(event.at).getTime() > activityCutoff).slice(0, 2000);
+      pruneAccess(data, now);
       return data.chains.filter((item) => item.status === 'redeploy_pending').map((item) => item.id);
     });
     for (const chainId of redeployIds) {
