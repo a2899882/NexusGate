@@ -25,6 +25,20 @@ if [[ -f /etc/nexusgate/xray/config.json ]]; then
 else
   printf '配置文件不存在\n'
 fi
+printf '\nXray 入站流量统计（累计，查询不会清零）：\n'
+stats_output="$(/usr/local/bin/xray api statsquery --server="127.0.0.1:${NG_XRAY_API_PORT:-10085}" -pattern 'inbound>>>' 2>&1)"
+if [[ $? -ne 0 ]]; then
+  printf '查询失败：%.250s\n' "$stats_output"
+else
+  STATS_OUTPUT="$stats_output" node -e '
+    try {
+      const stats = JSON.parse(process.env.STATS_OUTPUT).stat || [];
+      const entries = stats.filter(item => /^inbound>>>ng-.*>>>traffic>>>(uplink|downlink)$/.test(item.name));
+      if (!entries.length) console.log("尚无入口流量计数；请确认客户端确实连接本机节点后再测试");
+      else for (const item of entries.slice(0, 24)) console.log(`${item.name}: ${item.value} B`);
+    } catch { console.log("统计返回格式无效，请升级 Xray 和 Agent"); }
+  '
+fi
 printf '\n最近 Agent 与 Xray 日志：\n'
 if command -v journalctl >/dev/null && [[ -d /run/systemd/system ]]; then
   journalctl -u nexusgate-agent -u nexusgate-xray -n 45 --no-pager -o short-iso 2>&1 | sed -E 's/(Bearer |NG_AGENT_KEY=)[^[:space:]]+/\1[REDACTED]/g; s/[Pp]rivate[[:space:]]*[Kk]ey:[[:space:]]*[^[:space:]]+/PrivateKey: [REDACTED]/g'

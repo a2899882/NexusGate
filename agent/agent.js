@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -123,7 +123,12 @@ function activateConfig() {
   // Xray detects JSON from the file extension; a .candidate suffix is rejected.
   const candidate = `${CONFIG_FILE}.candidate.json`;
   const previous = `${CONFIG_FILE}.previous`;
-  fs.writeFileSync(candidate, `${JSON.stringify(combinedConfig(readResources()), null, 2)}\n`, { mode: 0o600 });
+  const nextConfig = `${JSON.stringify(combinedConfig(readResources()), null, 2)}\n`;
+  // An Agent update must not restart a healthy Xray with identical configuration:
+  // its in-memory traffic counters would be discarded before the next report.
+  if (fs.existsSync(CONFIG_FILE) && fs.readFileSync(CONFIG_FILE, 'utf8') === nextConfig &&
+      engineHealth().status === 'ready') return;
+  fs.writeFileSync(candidate, nextConfig, { mode: 0o600 });
   run(XRAY_BIN, ['run', '-test', '-config', candidate]);
   if (fs.existsSync(CONFIG_FILE)) fs.copyFileSync(CONFIG_FILE, previous);
   fs.renameSync(candidate, CONFIG_FILE);
@@ -221,17 +226,52 @@ async function heartbeat() {
   catch (error) { log('Heartbeat reached controller but readiness file failed', error.message); }
 }
 
-function queryUsage() {
-  const samples = [];
-  for (const resource of readResources()) {
-    if (!resource.meta || !resource.meta.metricsTag) continue;
-    const pattern = `inbound>>>${resource.meta.metricsTag}>>>traffic`;
-    const result = spawnSync(XRAY_BIN, ['api', 'statsquery', `--server=127.0.0.1:${process.env.NG_XRAY_API_PORT || 10085}`, `-pattern`, pattern, '-reset'], { encoding: 'utf8', timeout: 15000 });
-    if (result.status !== 0) continue;
-    const values = [...result.stdout.matchAll(/value:\s*([0-9]+)/g)].map((match) => Number(match[1]));
-    samples.push({ resourceId: resource.id, uplink: values[0] || 0, downlink: values[1] || 0 });
+function parseUsageStats(output, resources) {
+  const parsed = JSON.parse(output);
+  if (!parsed || !Array.isArray(parsed.stat || [])) throw new Error('Xray statsquery returned invalid JSON');
+  const byName = new Map();
+  for (const stat of parsed.stat || []) {
+    const value = Number(stat.value);
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid Xray counter: ${stat.name}`);
+    byName.set(stat.name, value);
   }
-  return samples;
+  return resources.flatMap((resource) => {
+    const prefix = `inbound>>>${resource.meta.metricsTag}>>>traffic>>>`;
+    if (!byName.has(`${prefix}uplink`) && !byName.has(`${prefix}downlink`)) return [];
+    return [{ resourceId: resource.id, uplink: byName.get(`${prefix}uplink`) || 0, downlink: byName.get(`${prefix}downlink`) || 0 }];
+  });
+}
+
+function xrayEpoch() {
+  let pid;
+  if (fs.existsSync('/run/systemd/system')) {
+    const result = spawnSync('systemctl', ['show', '-p', 'MainPID', '--value', 'nexusgate-xray.service'], { encoding:'utf8', timeout:3000 });
+    if (result.status === 0) pid = Number(result.stdout.trim());
+  } else {
+    try { pid = Number(fs.readFileSync('/run/nexusgate-xray.pid', 'utf8').trim()); } catch { /* service is not running */ }
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    // PID alone can be reused; the Linux process start tick distinguishes a new Xray instance.
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const startTick = stat.slice(stat.lastIndexOf(') ') + 2).trim().split(/\s+/)[19];
+    return startTick ? `${pid}:${startTick}` : null;
+  } catch { return null; }
+}
+
+function queryUsage() {
+  // Count client ingress once; counting the exit as well doubles forwarded traffic.
+  const resources = readResources().filter((resource) => resource.meta && resource.meta.metricsTag &&
+    ['relay', 'direct'].includes(resource.meta.kind));
+  if (!resources.length) return { samples: [], error: null, epoch: xrayEpoch() };
+  const before = xrayEpoch();
+  const result = spawnSync(XRAY_BIN, ['api', 'statsquery', `--server=127.0.0.1:${process.env.NG_XRAY_API_PORT || 10085}`, '-pattern', 'inbound>>>'],
+    { encoding: 'utf8', timeout: 15000 });
+  const after = xrayEpoch();
+  if (before && after && before !== after) throw new Error('Xray restarted during statistics query; retry on next cycle');
+  if (result.status !== 0) throw new Error(`Xray statsquery failed: ${safeError(result.stderr || result.error?.message || result.stdout).slice(0, 220)}`);
+  const samples = parseUsageStats(result.stdout, resources);
+  return { samples, epoch: before || after, error: samples.length ? null : '入口尚无 Xray 统计记录；若已实际使用，请检查节点是否连到本机 Xray' };
 }
 
 function readObservations() {
@@ -270,13 +310,17 @@ async function usageLoop() {
   while (true) {
     await sleep(60000);
     try {
-      const samples = queryUsage();
-      if (samples.length) await request('/api/agent/usage', { method: 'POST', body: JSON.stringify({ samples }) });
+      let report;
+      try { report = queryUsage(); }
+      catch (error) { report = { samples: [], error: safeError(error.message) }; }
+      await request('/api/agent/usage', { method: 'POST', body: JSON.stringify(report) });
+    } catch (error) { log('Usage report failed', safeError(error.message)); }
+    try {
       const { observations, offset } = readObservations();
       if (observations.length) await request('/api/agent/observations', { method: 'POST', body: JSON.stringify({ observations }) });
       // A failed upload must not advance the cursor; retry the same log lines next cycle.
       if (offset !== null) fs.writeFileSync(CURSOR_FILE, `${JSON.stringify({ offset })}\n`, { mode: 0o600 });
-    } catch (error) { log('Usage report failed', error.message); }
+    } catch (error) { log('IP observation report failed', safeError(error.message)); }
   }
 }
 
@@ -305,4 +349,4 @@ async function main() {
 
 if (require.main === module) main().catch((error) => { console.error(error); process.exit(1); });
 
-module.exports = { parseX25519, activateConfig, combinedConfig, applyResource, readObservations };
+module.exports = { parseX25519, activateConfig, combinedConfig, applyResource, readObservations, parseUsageStats, queryUsage };

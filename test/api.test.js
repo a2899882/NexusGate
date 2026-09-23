@@ -106,8 +106,25 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
     if (!job) break;
     await fetch(`${base}/api/agent/jobs/${job.id}/complete`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' }, body:JSON.stringify({ success:true, result:{ artifacts:{ realityPublicKey:'test-public-key' } } }) });
   }
+  const usageReport = async (uplink, downlink, epoch = 'xray-start-1') => {
+    const response = await fetch(`${base}/api/agent/usage`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
+      body: JSON.stringify({ epoch, samples:[{ resourceId:directDeploy.deployments[0].resourceId, uplink, downlink }] }) });
+    assert.equal(response.status, 200);
+  };
+  await usageReport(150, 350);
+  await usageReport(150, 350); // Retry after a lost HTTP response must not double count.
+  await usageReport(250, 900);
+  await usageReport(10, 20, 'xray-start-2'); // Xray restarted, and its counters began from zero.
+  const metered = (await request('/api/customers')).customers.find((item) => item.id === customerB.id);
+  assert.equal(metered.usedBytes, 1180);
+  assert.equal(metered.usedUplinkBytes, 260);
+  assert.equal(metered.usedDownlinkBytes, 920);
   const raw = await fetch(`${base}/s/${customerB.subscriptionToken}/raw`);
   assert.equal(raw.status, 200);
+  assert.match(raw.headers.get('subscription-userinfo'), /upload=260; download=920;/);
+  await usageReport(1000, 2000, 'xray-start-3'); // A fast restart can exceed previous counters before polling.
+  await usageReport(1000, 2000, 'xray-start-3');
+  assert.equal((await request('/api/customers')).customers.find((item) => item.id === customerB.id).usedBytes, 4180);
   assert.match(await raw.text(), /^ss:\/\//);
   assert.equal(raw.headers.get('cache-control'), 'no-store, private');
   const encoded = await fetch(`${base}/s/${customerB.subscriptionToken}/base64`);
@@ -117,7 +134,9 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.match(clashText, /^  - name: /m);
   assert.match(clashText, /^    type: "ss"$/m);
   const smart = await fetch(`${base}/s/${customerB.subscriptionToken}/clash-smart`);
-  assert.match(await smart.text(), /GEOSITE,category-ads-all,REJECT/);
+  const smartText = await smart.text();
+  assert.match(smartText, /GEOSITE,category-ads-all,REJECT/);
+  assert.match(smartText, /GEOSITE,facebook,Meta 服务/);
   const surge = await fetch(`${base}/s/${customerB.subscriptionToken}/surge`);
   assert.match(await surge.text(), /\[Proxy Group\]/);
   const singbox = await fetch(`${base}/s/${customerB.subscriptionToken}/singbox`);

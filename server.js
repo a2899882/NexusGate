@@ -19,7 +19,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -118,6 +118,7 @@ function publicDeployment(item) {
 
 function publicServer(item) {
   return { ...item, ...(item.engine ? { engine: { ...item.engine, detail: redactSecrets(item.engine.detail) } } : {}),
+    agentVersion: store.data.agents.find((agent) => agent.serverId === item.id && agent.status === 'active')?.version || null,
     pendingCleanup: store.data.deployments.filter((entry) => entry.serverId === item.id && entry.archived && entry.status !== 'deleted').length };
 }
 
@@ -314,7 +315,7 @@ async function handleAgent(req, res, pathname) {
 
   if (req.method === 'POST' && pathname === '/api/agent/usage') {
     const body = await readJson(req);
-    await orchestrator.recordUsage(agent.serverId, body.samples);
+    await orchestrator.recordUsage(agent.serverId, body.samples, redactSecrets(cleanText(body.error, 240)), cleanText(body.epoch, 80));
     sendJson(res, 200, { ok: true });
     return true;
   }
@@ -545,7 +546,7 @@ async function handleAdminApi(req, res, pathname) {
     const customer = await store.transaction((data) => {
       const next = {
         id: id('cus'), subscriptionToken: randomToken(32), name: requiredText(body.name, '客户名称'), group: cleanText(body.group, 80),
-        status: 'active', trafficLimitBytes: nonNegativeNumber(body.trafficLimitBytes, '流量上限'), usedBytes: 0,
+        status: 'active', trafficLimitBytes: nonNegativeNumber(body.trafficLimitBytes, '流量上限'), usedBytes: 0, usedUplinkBytes: 0, usedDownlinkBytes: 0,
         expiresAt: optionalIso(body.expiresAt, '到期日期'),
         ipLimit: nonNegativeNumber(body.ipLimit, 'IP 上限', true), deviceLimit: nonNegativeNumber(body.deviceLimit, '设备上限', true),
         tags: asIds(body.tags).slice(0, 20), notes: cleanText(body.notes, 1000),
@@ -601,7 +602,8 @@ async function handleAdminApi(req, res, pathname) {
     await store.transaction((data) => {
       const item = data.customers.find((entry) => entry.id === resetUsage.id);
       if (!item) throw Object.assign(new Error('客户不存在'), { statusCode: 404 });
-      item.usedBytes = 0; item.updatedAt = nowIso(); audit(data, actor, 'reset_customer_usage', item.id);
+      item.usedBytes = 0; item.usedUplinkBytes = 0; item.usedDownlinkBytes = 0;
+      item.updatedAt = nowIso(); audit(data, actor, 'reset_customer_usage', item.id);
     });
     sendJson(res, 200, { ok: true }); return true;
   }
@@ -794,8 +796,9 @@ async function handleSubscription(req, res, pathname) {
     return permitted;
   });
   if (!allowed) { sendJson(res, 429, { message:'订阅客户端数达到上限。可在客户访问记录中检查并重置观察窗口。' }, headers); return true; }
+  const historical = Math.max(0, (customer.usedBytes || 0) - (customer.usedUplinkBytes || 0) - (customer.usedDownlinkBytes || 0));
   res.writeHead(200, { ...headers, 'content-type':result.contentType, 'content-length':body.length,
-    'subscription-userinfo':`upload=${Math.max(0, Math.floor(customer.usedBytes || 0))}; download=0; total=${Math.max(0, Math.floor(customer.trafficLimitBytes || 0))}; expire=${customer.expiresAt ? Math.floor(Date.parse(customer.expiresAt) / 1000) : 0}` });
+    'subscription-userinfo':`upload=${Math.floor((customer.usedUplinkBytes || 0) + historical)}; download=${Math.floor(customer.usedDownlinkBytes || 0)}; total=${Math.max(0, Math.floor(customer.trafficLimitBytes || 0))}; expire=${customer.expiresAt ? Math.floor(Date.parse(customer.expiresAt) / 1000) : 0}` });
   res.end(body);
   return true;
 }

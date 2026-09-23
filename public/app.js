@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.5.1'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.5.2'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -16,6 +16,8 @@ const fmtBytes = (value) => {
   while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
   return `${size >= 10 || index === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[index]}`;
 };
+const oldUsageAgent = (version) => { const parts = String(version || '').match(/^(\d+)\.(\d+)\.(\d+)/); return parts &&
+  (Number(parts[1]) === 0 && (Number(parts[2]) < 5 || (Number(parts[2]) === 5 && Number(parts[3]) < 2))); };
 const splitList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 const statusText = {
   online:'在线', offline:'离线', pending:'待注册', active:'运行中', draft:'草稿', deploying:'部署中', queued:'排队中',
@@ -126,7 +128,7 @@ function renderServers() {
   const q = state.search.toLowerCase();
   const rows = state.servers.filter((item) => [item.name,item.region,item.publicAddress,item.publicAddressV6,...(item.labels || [])].join(' ').toLowerCase().includes(q)).map((server) => `<tr>
     <td><strong>${esc(server.name)}</strong><small>${esc(server.publicAddress)}${server.publicAddressV6 ? ` · ${esc(server.publicAddressV6)}` : ''}</small></td><td>${esc(roleText[server.role] || server.role)}</td><td>${esc(server.region || '未分组')}</td>
-    <td>${tags(server.labels)}</td><td>${status(server.status)}<small>${server.lastSeenAt ? `最后上报 ${fmtDate(server.lastSeenAt)}` : '等待 Agent 注册'}</small>${server.engine && server.engine.status === 'error' ? `<small class="error-detail" title="${esc(server.engine.detail)}">引擎故障：${esc(server.engine.detail)}</small>` : ''}${server.pendingCleanup ? `<small>待清理 ${server.pendingCleanup} 项</small>` : ''}</td>
+    <td>${tags(server.labels)}</td><td>${status(server.status)}<small>${server.lastSeenAt ? `最后上报 ${fmtDate(server.lastSeenAt)}` : '等待 Agent 注册'} · Agent ${esc(server.agentVersion || '未上报版本')}</small>${oldUsageAgent(server.agentVersion) ? '<small class="error-detail">旧版流量采集有问题，请在该机运行 ng-agent-update</small>' : ''}${server.usage ? `<small>流量统计 ${fmtDate(server.usage.lastReportAt)} · ${server.usage.sampleCount} 项</small>` : '<small>尚无流量统计上报</small>'}${server.usage?.error ? `<small class="error-detail" title="${esc(server.usage.error)}">统计异常：${esc(server.usage.error)}</small>` : ''}${server.engine && server.engine.status === 'error' ? `<small class="error-detail" title="${esc(server.engine.detail)}">引擎故障：${esc(server.engine.detail)}</small>` : ''}${server.pendingCleanup ? `<small>待清理 ${server.pendingCleanup} 项</small>` : ''}</td>
     <td>${rowActions(server.id, `<button data-action="edit-server" data-id="${esc(server.id)}">编辑</button><button data-action="enroll-server" data-id="${esc(server.id)}">注册</button>`, [
       ['agent-uninstall','SSH 卸载'], ...(server.pendingCleanup ? [['retry-cleanup','重试清理']] : []),
       server.pendingCleanup && server.status !== 'online' ? ['forget-server','遗忘离线设备'] : ['delete-server','删除设备']
@@ -141,11 +143,11 @@ function renderCustomers() {
   const rows = state.customers.filter((item) => [item.name,item.group,...(item.tags || [])].join(' ').toLowerCase().includes(q)).map((item) => {
     const percent = item.trafficLimitBytes ? Math.min(100, Math.round(item.usedBytes / item.trafficLimitBytes * 100)) : 0;
     return `<tr><td><strong>${esc(item.name)}</strong><small>${esc(item.group || '未分组')}</small></td><td>${status(item.status)}</td>
-      <td><strong>${fmtBytes(item.usedBytes)} / ${item.trafficLimitBytes ? fmtBytes(item.trafficLimitBytes) : '不限'}</strong><div class="progress"><i style="width:${percent}%"></i></div></td>
+      <td><strong>${fmtBytes(item.usedBytes)} / ${item.trafficLimitBytes ? fmtBytes(item.trafficLimitBytes) : '不限'}</strong><small>上行 ${fmtBytes(item.usedUplinkBytes)} · 下行 ${fmtBytes(item.usedDownlinkBytes)}</small><div class="progress"><i style="width:${percent}%"></i></div><small>${item.lastUsageAt ? `最后计量 ${fmtDate(item.lastUsageAt)}` : '尚未收到入口流量统计'}</small></td>
       <td>${item.expiresAt ? fmtDate(item.expiresAt) : '不限期'}</td><td>节点 IP ${item.observedIpCount || 0} / ${item.ipLimit || '不限'}<small>订阅客户端约 ${item.subscriptionClientCount || 0} / ${item.deviceLimit || '不限'}</small></td><td>${tags(item.tags)}</td>
       <td>${rowActions(item.id, `<button data-action="edit-customer" data-id="${esc(item.id)}">编辑</button><button data-action="customer-subscription" data-id="${esc(item.id)}">订阅</button><button data-action="customer-access" data-id="${esc(item.id)}">访问</button>`, [['reset-usage','流量清零'],['toggle-customer',item.status === 'active' ? '停用' : '启用'],['delete-customer','删除客户']])}${item.pendingCleanup ? `<small>待清理 ${item.pendingCleanup} 项</small>` : ''}</td></tr>`;
   }).join('');
-  return `<div class="page-intro"><p>节点 IP 在 Agent 上报后按滚动窗口统计，超限会停用客户；订阅客户端按最近 24 小时的客户端标识或 User-Agent 估算并限制订阅分发。点击“访问”查看记录。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
+  return `<div class="page-intro"><p>流量按入口上行＋下行双向累计，Agent 约每分钟上报；客户端订阅卡片要在下一次更新后才会显示新额度。IP 按滚动窗口统计，点击“访问”可查看来源和订阅记录。</p><button class="primary" data-action="add-customer">＋ 添加客户</button></div>
     <section class="panel"><div class="panel-head"><div class="toolbar"><input class="search" data-search placeholder="搜索客户、分组或标签" value="${esc(state.search)}"><span class="tag">${state.customers.length} 位</span></div></div>
     <div class="table-wrap"><table><thead><tr><th>客户</th><th>状态</th><th>流量</th><th>到期</th><th>使用限制</th><th>标签</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="7">${empty('还没有客户','先创建客户，再编排线路')}</td></tr>`}</tbody></table></div></section>`;
 }
