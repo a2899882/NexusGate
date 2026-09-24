@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const dgram = require('node:dgram');
+const { spawn } = require('node:child_process');
 const { parseX25519, parseUsageStats, combinedConfig, udpPortsForPid } = require('../agent/agent');
 const { redactSecrets } = require('../lib/redact');
 
@@ -53,11 +54,12 @@ test('old Hysteria 2 resources are repaired without rotating authentication or c
 
 test('UDP readiness inspection finds only ports owned by the target process', async () => {
   const socket = dgram.createSocket('udp4');
+  const other = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio:'ignore' });
   try {
     await new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
     assert.ok(udpPortsForPid(process.pid).has(socket.address().port));
-    assert.equal(udpPortsForPid(1).has(socket.address().port), false);
-  } finally { socket.close(); }
+    assert.equal(udpPortsForPid(other.pid).has(socket.address().port), false);
+  } finally { socket.close(); other.kill(); }
 });
 
 test('Agent restart preserves a healthy Xray process when configuration is unchanged', () => {
