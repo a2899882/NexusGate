@@ -620,7 +620,15 @@ async function main() {
   log(`NexusGate Agent v${VERSION} starting`);
   // Keep the control channel alive even when a stale node configuration cannot start.
   // The administrator can then see the engine error and a repair job can be claimed.
-  try { activateConfig(); } catch (error) { lastEngineError = safeError(error.message); log('Initial Xray activation failed', lastEngineError); }
+  try {
+    // A first upgrade from the old installer can restart Xray before the new
+    // updater's preflight runs. Persist the old process counters here as well.
+    const resources = readResources();
+    const next = `${JSON.stringify(combinedConfig(resources), null, 2)}\n`;
+    if (fs.existsSync(CONFIG_FILE) && fs.readFileSync(CONFIG_FILE, 'utf8') !== next)
+      await flushUsageBeforeChange('xray');
+    activateConfig();
+  } catch (error) { lastEngineError = safeError(error.message); log('Initial Xray activation failed', lastEngineError); }
   try { activateSingBox(); } catch (error) { lastEngineError = safeError(error.message); log('Initial sing-box activation failed', lastEngineError); }
   try { await heartbeat(); } catch (error) { log('Initial heartbeat failed', error.message); }
   setInterval(() => heartbeat().catch((error) => log('Heartbeat failed', error.message)), 30000).unref();
