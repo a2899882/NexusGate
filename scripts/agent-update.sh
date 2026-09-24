@@ -20,6 +20,12 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-logrotate.conf" -o "$tmp_dir/logrotate.conf"
 [[ -s "$tmp_dir/update.sh" ]] || die 'Agent 升级脚本下载不完整'
 node --check "$tmp_dir/agent.js"
+# Updating can rewrite an older HY2 configuration and restart Xray. Persist
+# its current bidirectional counters before the running process is replaced.
+if [[ -f /opt/nexusgate-agent/agent.js ]]; then
+  ( set -a; source /etc/nexusgate/agent.env; set +a; node /opt/nexusgate-agent/agent.js flush-usage ) \
+    || die '更新前流量统计上报失败，保留原 Agent；检查控制面连接和 ng-agent doctor 后重试'
+fi
 install -m 0644 "$tmp_dir/agent.js" /opt/nexusgate-agent/agent.js
 install -m 0755 "$tmp_dir/run.sh" /opt/nexusgate-agent/run.sh
 install -m 0755 "$tmp_dir/uninstall.sh" /usr/local/sbin/ng-agent-uninstall

@@ -49,6 +49,28 @@ if [[ -f /etc/nexusgate/xray/config.json ]]; then
 else
   printf '配置文件不存在\n'
 fi
+printf '\nHysteria 2 UDP 监听：\n'
+node <<'NODE' 2>&1 || true
+const fs = require('node:fs');
+const agent = require('/opt/nexusgate-agent/agent.js');
+const dir = '/etc/nexusgate/xray/resources';
+const resources = fs.readdirSync(dir).filter((name) => name.endsWith('.json'))
+  .map((name) => JSON.parse(fs.readFileSync(`${dir}/${name}`, 'utf8')));
+const expected = resources.flatMap((resource) => resource.inbounds || [])
+  .filter((inbound) => inbound.protocol === 'hysteria').map((inbound) => inbound.port);
+if (!expected.length) console.log('没有 Hysteria 2 入站');
+else {
+  const config = JSON.parse(fs.readFileSync('/etc/nexusgate/xray/config.json', 'utf8'));
+  for (const port of expected) {
+    const inbound = config.inbounds.find((item) => item.port === port && item.protocol === 'hysteria');
+    console.log(`UDP ${port}: 传输 ${inbound?.streamSettings?.network || '未配置'}，账户 ${(inbound?.settings?.clients || inbound?.settings?.users || []).length}`);
+  }
+  try {
+    const missing = agent.missingHysteriaListeners(resources);
+    console.log(missing.length ? `未监听 UDP: ${missing.join(', ')}` : '所有 Hysteria 2 UDP 端口均由 Xray 监听');
+  } catch (error) { console.log(`监听检查失败: ${error.message}`); }
+}
+NODE
 printf '\nXray 入站流量统计（累计，查询不会清零）：\n'
 if [[ "$has_xray_resources" == 0 ]]; then
   printf '无 Xray 入口，跳过统计查询。\n'

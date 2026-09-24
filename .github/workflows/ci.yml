@@ -37,3 +37,14 @@ jobs:
           sudo env PATH="$PATH" NG_STATS_SOURCE="$GITHUB_WORKSPACE/agent/stats-query.go" bash scripts/agent-singbox.sh install
       - name: AnyTLS handshake and two-way traffic counters
         run: bash scripts/anytls-smoke.sh
+      - name: Install Xray 26.3.27 for Hysteria 2 interoperability
+        run: |
+          mkdir -p "$RUNNER_TEMP/nexusgate-xray"
+          curl -fL --retry 3 https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip -o "$RUNNER_TEMP/nexusgate-xray.zip"
+          unzip -q "$RUNNER_TEMP/nexusgate-xray.zip" xray -d "$RUNNER_TEMP/nexusgate-xray"
+      - name: Build QUIC-enabled sing-box test client
+        run: |
+          mkdir -p "$RUNNER_TEMP/nexusgate-hy2-client"
+          GOBIN="$RUNNER_TEMP/nexusgate-hy2-client" GOMAXPROCS=2 go install -trimpath -ldflags='-s -w' -p 2 -tags with_quic github.com/sagernet/sing-box/cmd/sing-box@v1.12.23
+      - name: Hysteria 2 handshake, UDP listener and two-way counters
+        run: NG_XRAY_BIN="$RUNNER_TEMP/nexusgate-xray/xray" NG_SINGBOX_BIN="$RUNNER_TEMP/nexusgate-hy2-client/sing-box" bash scripts/hy2-smoke.sh
