@@ -63,6 +63,8 @@ test('Hysteria 2 reuses Xray route and emits importable Clash and sing-box crede
     credentials, customer, tlsDomain:'node.example.com' });
   assert.equal(node.inbounds[0].protocol, 'hysteria');
   assert.equal(node.inbounds[0].streamSettings.method, 'hysteria');
+  assert.equal(node.inbounds[0].streamSettings.network, 'hysteria');
+  assert.equal(node.inbounds[0].settings.clients[0].auth, credentials.relayPassword);
   assert.equal(node.inbounds[0].settings.users[0].auth, credentials.relayPassword);
   assert.equal(node.inbounds[0].streamSettings.tlsSettings.certificates[0].keyFile, '/etc/nexusgate/tls/node.example.com/privkey.pem');
   const uri = buildClientUri({ protocol:'hysteria2', relayServer:relay, relayPort:23000,

@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.6.6';
+const VERSION = '0.6.7';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -95,6 +95,20 @@ function readResources() {
   return fs.readdirSync(RESOURCE_DIR).filter((name) => name.endsWith('.json')).sort().map((name) => JSON.parse(fs.readFileSync(path.join(RESOURCE_DIR, name), 'utf8')));
 }
 
+function compatibleXrayInbound(inbound) {
+  if (inbound.protocol !== 'hysteria') return inbound;
+  // Older Agent resources contain only `method` and `users`. Xray 26.3.27
+  // silently ignores both fields, falling back to TCP with no HY2 accounts.
+  // Repair the effective configuration without changing the saved resource,
+  // port, password or the customer's existing subscription link.
+  const accounts = inbound.settings?.clients || inbound.settings?.users;
+  if (!Array.isArray(accounts) || !accounts.length || accounts.some((user) => !user.auth))
+    throw new Error('Hysteria 2 入口没有认证账户；拒绝启动未受保护的入口');
+  return { ...inbound,
+    settings: { ...inbound.settings, clients: accounts, users: accounts },
+    streamSettings: { ...inbound.streamSettings, network:'hysteria', method:'hysteria' } };
+}
+
 function combinedConfig(resources) {
   const apiPort = Number(process.env.NG_XRAY_API_PORT || 10085);
   const config = {
@@ -108,7 +122,7 @@ function combinedConfig(resources) {
   };
   for (const resource of resources) {
     if (resource.engine === 'sing-box') continue;
-    config.inbounds.push(...(resource.inbounds || []));
+    config.inbounds.push(...(resource.inbounds || []).map(compatibleXrayInbound));
     config.outbounds.push(...(resource.outbounds || []));
     config.routing.rules.push(...(resource.routingRules || []));
   }
@@ -201,6 +215,7 @@ function activateConfig() {
   fs.renameSync(candidate, CONFIG_FILE);
   try {
     restartXray();
+    assertHysteriaListeners(resources);
   } catch (error) {
     if (fs.existsSync(previous)) {
       fs.copyFileSync(previous, CONFIG_FILE);
@@ -318,6 +333,18 @@ function engineHealth() {
   const resources = readResources();
   const xray = resources.some((item) => item.engine !== 'sing-box') ? serviceHealth('nexusgate-xray')
     : { status:'ready', detail:'无 Xray 资源，已停止空闲进程' };
+  if (xray.status === 'ready') {
+    try {
+      const missing = missingHysteriaListeners(resources);
+      if (missing.length) {
+        xray.status = 'error';
+        xray.detail = `Hysteria 2 UDP 未监听：${missing.join(', ')}`;
+      }
+    } catch (error) {
+      xray.status = 'error';
+      xray.detail = safeError(error.message);
+    }
+  }
   xray.singBoxInstalled = fs.existsSync(SINGBOX_BIN) && fs.existsSync(SINGBOX_STATS_BIN);
   xray.certificates = installedCertificates();
   if (resources.some((item) => item.engine === 'sing-box')) {
@@ -416,6 +443,50 @@ function serviceEpoch(service = 'nexusgate-xray') {
     const startTick = stat.slice(stat.lastIndexOf(') ') + 2).trim().split(/\s+/)[19];
     return startTick ? `${pid}:${startTick}` : null;
   } catch { return null; }
+}
+
+function udpPortsForPid(pid) {
+  const sockets = new Set();
+  for (const fd of fs.readdirSync(`/proc/${pid}/fd`)) {
+    try {
+      const match = fs.readlinkSync(`/proc/${pid}/fd/${fd}`).match(/^socket:\[(\d+)\]$/);
+      if (match) sockets.add(match[1]);
+    } catch { /* a descriptor closed during inspection */ }
+  }
+  const ports = new Set();
+  for (const table of ['/proc/net/udp', '/proc/net/udp6']) {
+    const rows = fs.readFileSync(table, 'utf8').trim().split('\n').slice(1);
+    for (const row of rows) {
+      const fields = row.trim().split(/\s+/);
+      if (fields[3] === '07' && sockets.has(fields[9]))
+        ports.add(parseInt(fields[1].split(':').at(-1), 16));
+    }
+  }
+  return ports;
+}
+
+function missingHysteriaListeners(resources) {
+  const expected = [...new Set(resources.filter((item) => item.engine !== 'sing-box')
+    .flatMap((item) => item.inbounds || []).filter((item) => item.protocol === 'hysteria')
+    .map((item) => item.port))];
+  if (!expected.length) return [];
+  const epoch = serviceEpoch();
+  if (!epoch) throw new Error('无法确认 Xray 进程，无法验证 Hysteria 2 UDP 监听');
+  const actual = udpPortsForPid(Number(epoch.split(':')[0]));
+  return expected.filter((port) => !actual.has(port));
+}
+
+function assertHysteriaListeners(resources) {
+  if (!resources.some((item) => (item.inbounds || []).some((inbound) => inbound.protocol === 'hysteria'))) return;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      const missing = missingHysteriaListeners(resources);
+      if (!missing.length) return;
+    } catch { /* systemd may not have published its MainPID yet */ }
+    if (attempt < 9) spawnSync('sleep', ['0.2']);
+  }
+  const missing = missingHysteriaListeners(resources);
+  throw new Error(`Hysteria 2 未监听 UDP ${missing.join(', ')}；检查 Xray 配置与本机端口冲突`);
 }
 
 function queryUsage() {
@@ -563,4 +634,5 @@ if (require.main === module) {
 }
 
 module.exports = { parseX25519, activateConfig, activateSingBox, combinedConfig, combinedSingBoxConfig, applyResource,
-  readObservations, readSingBoxObservations, parseUsageStats, queryUsage, installedCertificates };
+  readObservations, readSingBoxObservations, parseUsageStats, queryUsage, installedCertificates,
+  udpPortsForPid, missingHysteriaListeners };

@@ -37,3 +37,10 @@ jobs:
           sudo env PATH="$PATH" NG_STATS_SOURCE="$GITHUB_WORKSPACE/agent/stats-query.go" bash scripts/agent-singbox.sh install
       - name: AnyTLS handshake and two-way traffic counters
         run: bash scripts/anytls-smoke.sh
+      - name: Install Xray 26.3.27 for Hysteria 2 interoperability
+        run: |
+          mkdir -p "$RUNNER_TEMP/nexusgate-xray"
+          curl -fL --retry 3 https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip -o "$RUNNER_TEMP/nexusgate-xray.zip"
+          unzip -q "$RUNNER_TEMP/nexusgate-xray.zip" xray -d "$RUNNER_TEMP/nexusgate-xray"
+      - name: Hysteria 2 handshake, UDP listener and two-way counters
+        run: NG_XRAY_BIN="$RUNNER_TEMP/nexusgate-xray/xray" bash scripts/hy2-smoke.sh

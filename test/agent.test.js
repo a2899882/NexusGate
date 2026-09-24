@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { parseX25519, parseUsageStats } = require('../agent/agent');
+const dgram = require('node:dgram');
+const { parseX25519, parseUsageStats, combinedConfig, udpPortsForPid } = require('../agent/agent');
 const { redactSecrets } = require('../lib/redact');
 
 test('parses both current and older Xray x25519 output without including private keys in errors', () => {
@@ -35,6 +36,28 @@ test('Xray candidate configuration has a JSON extension at validation time', () 
     assert.equal(candidate, path.join(configDir, 'config.json.candidate.json'));
     assert.equal(JSON.parse(fs.readFileSync(candidate, 'utf8')).inbounds[0].tag, 'api-in');
   } finally { fs.rmSync(temp, { recursive:true, force:true }); }
+});
+
+test('old Hysteria 2 resources are repaired without rotating authentication or changing saved resources', () => {
+  const legacy = { id:'hy2-entry', inbounds:[{ tag:'hy2-in', protocol:'hysteria', port:34537,
+    settings:{ version:2, users:[{ auth:'unchanged-password', email:'ng:customer' }] },
+    streamSettings:{ method:'hysteria', security:'tls', hysteriaSettings:{ version:2 } } }] };
+  const before = JSON.stringify(legacy);
+  const inbound = combinedConfig([legacy]).inbounds[1];
+  assert.equal(inbound.streamSettings.network, 'hysteria');
+  assert.equal(inbound.settings.clients[0].auth, 'unchanged-password');
+  assert.deepEqual(inbound.settings.clients, inbound.settings.users);
+  assert.equal(JSON.stringify(legacy), before);
+  assert.throws(() => combinedConfig([{ inbounds:[{ protocol:'hysteria', settings:{ version:2 } }] }]), /认证账户/);
+});
+
+test('UDP readiness inspection finds only ports owned by the target process', async () => {
+  const socket = dgram.createSocket('udp4');
+  try {
+    await new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
+    assert.ok(udpPortsForPid(process.pid).has(socket.address().port));
+    assert.equal(udpPortsForPid(1).has(socket.address().port), false);
+  } finally { socket.close(); }
 });
 
 test('Agent restart preserves a healthy Xray process when configuration is unchanged', () => {
