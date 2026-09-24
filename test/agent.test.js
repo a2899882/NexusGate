@@ -44,8 +44,11 @@ test('Agent restart preserves a healthy Xray process when configuration is uncha
     const binDir = path.join(temp, 'bin');
     fs.mkdirSync(path.join(configDir, 'resources'), { recursive:true });
     fs.mkdirSync(binDir);
+    const resource = { id:'entry-resource', meta:{ kind:'direct', metricsTag:'entry-in' },
+      inbounds:[], outbounds:[], routingRules:[] };
+    fs.writeFileSync(path.join(configDir, 'resources', 'entry.json'), JSON.stringify(resource));
     const agentFile = path.join(__dirname, '../agent/agent.js');
-    const script = `const agent=require(${JSON.stringify(agentFile)});const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(path.join(configDir,'config.json'))}, JSON.stringify(agent.combinedConfig([]), null, 2)+'\\n');agent.activateConfig()`;
+    const script = `const agent=require(${JSON.stringify(agentFile)});const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(path.join(configDir,'config.json'))}, JSON.stringify(agent.combinedConfig([${JSON.stringify(resource)}]), null, 2)+'\\n');agent.activateConfig()`;
     const { spawnSync } = require('node:child_process');
     const serviceCommand = fs.existsSync('/run/systemd/system') ? 'systemctl' : 'rc-service';
     fs.writeFileSync(path.join(binDir, serviceCommand), '#!/bin/sh\nexit 0\n', { mode:0o755 });
@@ -156,6 +159,61 @@ test('Agent reads cumulative counters without resetting Xray', () => {
     assert.deepEqual(JSON.parse(run.stdout).samples, [{ resourceId:'entry', uplink:12, downlink:34, epoch:'xray:unknown' }]);
     assert.doesNotMatch(fs.readFileSync(argumentsFile, 'utf8'), /reset/);
   } finally { fs.rmSync(temp, { recursive:true, force:true }); }
+});
+
+test('adding an Xray resource submits old ingress counters before restarting the engine', async () => {
+  const http = require('node:http');
+  const { spawn } = require('node:child_process');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexusgate-flush-'));
+  const dir = path.join(temp, 'xray');
+  const bin = path.join(temp, 'bin');
+  fs.mkdirSync(path.join(dir, 'resources'), { recursive:true });
+  fs.mkdirSync(bin);
+  const old = { id:'old-resource', meta:{ kind:'direct', metricsTag:'old-in' }, inbounds:[], outbounds:[], routingRules:[] };
+  fs.writeFileSync(path.join(dir, 'resources', 'old-resource.json'), JSON.stringify(old));
+  fs.writeFileSync(path.join(bin, 'xray'), '#!/bin/sh\nif [ "$1" = api ]; then printf \'{"stat":[{"name":"inbound>>>old-in>>>traffic>>>uplink","value":"123"},{"name":"inbound>>>old-in>>>traffic>>>downlink","value":"456"}]}\'; fi\n', { mode:0o755 });
+  const manager = fs.existsSync('/run/systemd/system') ? 'systemctl' : 'rc-service';
+  fs.writeFileSync(path.join(bin, manager), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(path.join(temp, 'service-commands'))}\nexit 0\n`, { mode:0o755 });
+  const seen = [];
+  const controller = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    seen.push({ path:req.url, body:JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      newResourceAlreadyWritten:fs.existsSync(path.join(dir, 'resources', 'new-resource.json')) });
+    res.setHeader('content-type', 'application/json'); res.end('{}');
+  });
+  try {
+    await new Promise((resolve) => controller.listen(0, '127.0.0.1', resolve));
+    const script = `require(${JSON.stringify(path.join(__dirname, '../agent/agent.js'))}).applyResource({resource:${JSON.stringify({ id:'new-resource', meta:{ kind:'direct', metricsTag:'new-in' }, inbounds:[], outbounds:[], routingRules:[] })}}).catch(error=>{console.error(error);process.exitCode=1})`;
+    const child = spawn(process.execPath, ['-e', script], { env:{ ...process.env,
+      NG_CONFIG_DIR:dir, NG_XRAY_BIN:path.join(bin, 'xray'), NG_CONTROLLER:`http://127.0.0.1:${controller.address().port}`,
+      NG_AGENT_KEY:'test-agent-key', PATH:`${bin}:${process.env.PATH}` }, stdio:['ignore','pipe','pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const exit = await new Promise((resolve) => child.on('exit', resolve));
+    assert.equal(exit, 0, stderr);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].path, '/api/agent/usage');
+    assert.deepEqual(seen[0].body.samples.map(({ resourceId, uplink, downlink }) => ({ resourceId, uplink, downlink })),
+      [{ resourceId:'old-resource', uplink:123, downlink:456 }]);
+    assert.equal(seen[0].newResourceAlreadyWritten, false);
+    assert.match(fs.readFileSync(path.join(temp, 'service-commands'), 'utf8'), /restart/);
+    const flush = spawn(process.execPath, [path.join(__dirname, '../agent/agent.js'), 'flush-usage'], { env:{ ...process.env,
+      NG_CONFIG_DIR:dir, NG_XRAY_BIN:path.join(bin, 'xray'), NG_CONTROLLER:`http://127.0.0.1:${controller.address().port}`,
+      NG_AGENT_KEY:'test-agent-key', PATH:`${bin}:${process.env.PATH}` }, stdio:'ignore' });
+    assert.equal(await new Promise((resolve) => flush.on('exit', resolve)), 0);
+    assert.equal(seen[1].path, '/api/agent/usage');
+    fs.writeFileSync(path.join(bin, 'xray'), '#!/bin/sh\nif [ "$1" = api ]; then printf \'{"stat":[{"name":"inbound>>>old-in>>>traffic>>>uplink","value":"invalid"}]}\'; fi\n', { mode:0o755 });
+    const badScript = `require(${JSON.stringify(path.join(__dirname, '../agent/agent.js'))}).applyResource({resource:${JSON.stringify({ id:'third-resource', meta:{ kind:'direct', metricsTag:'third-in' }, inbounds:[], outbounds:[], routingRules:[] })}}).catch(error=>{console.error(error);process.exitCode=1})`;
+    const broken = spawn(process.execPath, ['-e', badScript], { env:{ ...process.env,
+      NG_CONFIG_DIR:dir, NG_XRAY_BIN:path.join(bin, 'xray'), NG_CONTROLLER:`http://127.0.0.1:${controller.address().port}`,
+      NG_AGENT_KEY:'test-agent-key', PATH:`${bin}:${process.env.PATH}` }, stdio:'ignore' });
+    assert.equal(await new Promise((resolve) => broken.on('exit', resolve)), 1);
+    assert.equal(fs.existsSync(path.join(dir, 'resources', 'third-resource.json')), false);
+    assert.equal(seen.length, 2, 'invalid counters must block the restart before publishing a partial report');
+  } finally {
+    controller.close(); fs.rmSync(temp, { recursive:true, force:true });
+  }
 });
 
 test('sing-box config isolates AnyTLS from Xray and meters each entry once', () => {

@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.4'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.6'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -84,7 +84,8 @@ async function load(page = state.page) {
     } else if (page === 'deployments') {
       const [servers, customers, routes] = await Promise.all([api('/api/servers'), api('/api/customers'), api('/api/chains')]);
       state.servers = servers.servers; state.customers = customers.customers; state.chains = routes.chains; state.deployments = routes.deployments;
-    } else if (page === 'operations') {
+    } else if (page === 'commands') { /* Command reference needs no API request. */ }
+    else if (page === 'operations') {
       const [jobs, servers, overview] = await Promise.all([api('/api/jobs'), api('/api/servers'), api('/api/overview')]);
       state.jobs = jobs.jobs; state.servers = servers.servers; state.overview = overview; state.version = overview.version || state.version;
     }
@@ -95,7 +96,7 @@ async function load(page = state.page) {
 function setPage(page) {
   state.page = page; state.search = ''; closeSidebar();
   $$('#nav button').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
-  const titles = { overview:'概览', servers:'服务器', customers:'客户与订阅', chains:'转发与节点', deployments:'部署与链接', operations:'设置与运维' };
+  const titles = { overview:'概览', servers:'服务器', customers:'客户与订阅', chains:'转发与节点', deployments:'部署与链接', commands:'安装与命令', operations:'设置与运维' };
   $('#page-title').textContent = titles[page]; $('#breadcrumb').textContent = `NEXUSGATE / ${titles[page]}`;
   load(page);
 }
@@ -179,7 +180,9 @@ function renderChains() {
     const direct = (chain.topology || 'forward') === 'direct';
     const path = direct ? protocolName(chain.relayProtocol, 'relay-ingress') : `${protocolName(chain.relayProtocol, 'relay-ingress')} → ${protocolName(chain.exitProtocol, 'exit-transport')}`;
     const exit = direct ? '本机直出' : ((state.servers.find((item) => item.id === chain.exitServerId) || {}).name || '已删除');
-    return `<tr><td><strong>${esc(chain.name)}</strong><small>${esc(topologyText[chain.topology || 'forward'])} · ${esc(path)}</small></td>
+    const applied = state.deployments.filter((item) => item.chainId === chain.id && ['active','queued','deploying'].includes(item.status) && item.role !== 'exit');
+    const drift = applied.some((item) => item.protocol !== chain.relayProtocol);
+    return `<tr><td><strong>${esc(chain.name)}</strong><small>${esc(topologyText[chain.topology || 'forward'])} · ${esc(path)}</small>${drift ? '<small class="error-detail">编辑的协议尚未应用，当前节点见“部署与链接”</small>' : ''}</td>
       <td>${esc(names(chain.relayServerIds, state.servers))}<small>${esc(chain.networkMode || 'ipv4').toUpperCase()}</small></td><td>${esc(exit)}</td>
       <td>${esc(names(chain.customerIds, state.customers))}</td><td>${status(chain.status)}${chain.lastError ? `<small class="error-detail" title="${esc(chain.lastError)}">${esc(chain.lastError)}</small>` : ''}</td><td>${compactChainActions(chain)}</td></tr>`;
   }).join('');
@@ -199,11 +202,33 @@ function renderDeployments() {
       (item.role === 'direct' || state.deployments.some((exit) => exit.id === item.exitDeploymentId && exit.status === 'active'));
     return `<tr><td><strong>${esc(chain ? chain.name : '已删除线路')}</strong><small>${esc(deploymentRoleText[item.role] || item.role)}</small></td><td>${esc(customer ? customer.name : '已删除')}</td>
       <td>${esc(server ? server.name : '已删除')}<small>${esc(server ? (server.publicAddressV6 && chain && chain.networkMode === 'ipv6' ? server.publicAddressV6 : server.publicAddress) : '')}:${item.port}</small></td>
-      <td>${esc(protocolName(item.protocol, item.role === 'exit' ? 'exit-transport' : 'relay-ingress'))}</td><td>${status(item.status)}${item.error ? `<small>${esc(item.error)}</small>` : ''}</td>
+      <td>${esc(protocolName(item.protocol, item.role === 'exit' ? 'exit-transport' : 'relay-ingress'))}${chain && item.role !== 'exit' && item.protocol !== chain.relayProtocol ? '<small class="error-detail">编辑中的协议尚未部署</small>' : ''}</td><td>${status(item.status)}${item.error ? `<small>${esc(item.error)}</small>` : ''}${item.role !== 'exit' ? `<small>${item.meteredTraffic ? `本部署计量：上行 ${fmtBytes(item.meteredTraffic.uplink)} · 下行 ${fmtBytes(item.meteredTraffic.downlink)}` : '等待入口计量上报'}</small>${item.lastUsageAt ? `<small>最后上报 ${fmtDate(item.lastUsageAt)}</small>` : ''}` : ''}</td>
       <td><div class="actions">${canCopy ? `<button data-action="copy-uri" data-value="${esc(item.clientUri)}">复制链接</button>` : ''}${chain ? `<button data-action="edit-chain" data-id="${esc(chain.id)}">编辑线路</button>` : ''}</div></td></tr>`;
   }).join('');
   return `<div class="page-intro"><p>显示线路生成的实际入口、出口和单机节点。客户端链接只在入口资源部署成功后生成；编辑请从对应线路统一完成。</p></div>
     <section class="panel"><div class="table-wrap"><table><thead><tr><th>线路 / 角色</th><th>客户</th><th>设备</th><th>协议</th><th>状态 / 错误</th><th>操作</th></tr></thead><tbody>${rows || `<tr><td colspan="6">${empty('暂无部署','从“线路编排”页面发起部署')}</td></tr>`}</tbody></table></div></section>`;
+}
+
+function renderCommands() {
+  const groups = [
+    ['面板机', [
+      ['更新控制面', 'ng update', '只在面板机运行；更新后刷新浏览器。'],
+      ['检查面板 HTTPS', 'ng cert', '只检查面板的 Caddy 证书，不会申请入口节点证书。'],
+      ['备份面板', 'ng backup', '客户凭据会包含在备份中，请妥善保管。']
+    ]],
+    ['入口机 / 中转机', [
+      ['更新 Agent', 'ng-agent update', '更新后自动恢复心跳；已有线路无需重建。'],
+      ['申请或续签节点证书', 'ng-agent cert', '按提示输入已解析到本机的域名。公网 80/TCP 可用时选择 HTTP；否则选择 Cloudflare DNS 并输入 Zone DNS Edit API Token。已有有效证书不必重复申请。'],
+      ['安装 AnyTLS 引擎', 'ng-agent engine install', '仅在承载 AnyTLS 的入口执行。首次构建可能耗时，临时 Go 缓存完成后会清理。HY2 与 VLESS WS TLS 无需该引擎。'],
+      ['检查证书、引擎与双向计数', 'ng-agent doctor', '核对本机证书、Xray、sing-box 与入口统计。']
+    ]],
+    ['出口机 / 落地机', [
+      ['更新轻量 Agent', 'ng-agent update', '只使用出口传输时无需安装 sing-box，也无需申请入口证书。'],
+      ['检查运行状态', 'ng-agent doctor', '核对心跳和 Xray 配置。']
+    ]]
+  ];
+  const sections = groups.map(([title, commands]) => `<section class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div><div class="panel-body stack">${commands.map(([label, command, hint]) => `<div class="command-item"><div><b>${esc(label)}</b><small>${esc(hint)}</small><code>${esc(command)}</code></div><button data-action="copy-uri" data-value="${esc(command)}">复制命令</button></div>`).join('')}</div></section>`).join('');
+  return `<div class="page-intro"><p>在对应服务器的 SSH 终端以 root 运行。首次注册请在“服务器”选择目标设备并生成一次性注册命令；证书域名需要先解析到入口机，AnyTLS 须单独安装 sing-box。</p></div><div class="command-grid">${sections}</div>`;
 }
 
 function renderOperations() {
@@ -217,7 +242,7 @@ function renderOperations() {
 }
 
 function render() {
-  const views = { overview: renderOverview, servers: renderServers, customers: renderCustomers, chains: renderChains, deployments: renderDeployments, operations: renderOperations };
+  const views = { overview: renderOverview, servers: renderServers, customers: renderCustomers, chains: renderChains, deployments: renderDeployments, commands: renderCommands, operations: renderOperations };
   $('#content').innerHTML = views[state.page]();
 }
 
@@ -369,7 +394,7 @@ document.addEventListener('submit', async (event) => {
       const resourceId = data.get('resourceId');
       const payload = { name:data.get('name'), topology:data.get('topology'), networkMode:data.get('networkMode'), relayServerIds:data.getAll('relayServerIds'), exitServerId:data.get('exitServerId') || null, customerIds:data.getAll('customerIds'), relayProtocol:data.get('relayProtocol'), exitProtocol:data.get('exitProtocol') || null, relayPortMode:data.get('relayPortMode'), relayPort:data.get('relayPort') || null, exitPortMode:data.get('exitPortMode') || null, exitPort:data.get('exitPort') || null, realityServerName:data.get('realityServerName'), realityDestPort:Number(data.get('realityDestPort') || 443) };
       const result = await api(resourceId ? `/api/chains/${resourceId}` : '/api/chains', { method:resourceId ? 'PATCH' : 'POST', body:JSON.stringify(payload) });
-      $('#modal').close(); toast(result.requiresRedeploy ? '修改已保存，请点击“应用修改”' : (resourceId ? '线路已更新' : '线路草稿已创建')); await load('chains');
+      $('#modal').close(); toast(result.requiresRedeploy ? '修改已保存；原节点仍按旧协议运行，请点击“应用修改”' : (resourceId ? '线路已更新' : '线路草稿已创建')); await load('chains');
     } else if (form.id === 'account-form') {
       if (data.get('newPassword') !== data.get('confirmPassword')) throw new Error('两次输入的新密码不一致');
       await api('/api/account', { method:'PATCH', body:JSON.stringify({ username:data.get('username'), currentPassword:data.get('currentPassword'), newPassword:data.get('newPassword') }) });

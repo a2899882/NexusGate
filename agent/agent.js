@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.6.4';
+const VERSION = '0.6.6';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -178,7 +178,19 @@ function activateConfig() {
   // Xray detects JSON from the file extension; a .candidate suffix is rejected.
   const candidate = `${CONFIG_FILE}.candidate.json`;
   const previous = `${CONFIG_FILE}.previous`;
-  const nextConfig = `${JSON.stringify(combinedConfig(readResources()), null, 2)}\n`;
+  const resources = readResources();
+  const nextConfig = `${JSON.stringify(combinedConfig(resources), null, 2)}\n`;
+  if (!resources.some((item) => item.engine !== 'sing-box')) {
+    // An AnyTLS-only entry does not need a resident Xray process. Keep a
+    // minimal, safe config so a manual service start cannot revive old ports.
+    if (!fs.existsSync(CONFIG_FILE) || fs.readFileSync(CONFIG_FILE, 'utf8') !== nextConfig) {
+      fs.writeFileSync(candidate, nextConfig, { mode: 0o600 });
+      run(XRAY_BIN, ['run', '-test', '-config', candidate]);
+      fs.renameSync(candidate, CONFIG_FILE);
+    }
+    if (serviceHealth('nexusgate-xray').status === 'ready') serviceCommand('stop', 'nexusgate-xray');
+    return;
+  }
   // An Agent update must not restart a healthy Xray with identical configuration:
   // its in-memory traffic counters would be discarded before the next report.
   if (fs.existsSync(CONFIG_FILE) && fs.readFileSync(CONFIG_FILE, 'utf8') === nextConfig &&
@@ -203,7 +215,23 @@ function safeResourcePath(resourceId) {
   return path.join(RESOURCE_DIR, `${resourceId}.json`);
 }
 
-function applyResource(payload) {
+async function flushUsageBeforeChange(engine) {
+  const live = readResources().some((resource) => (resource.engine || 'xray') === engine &&
+    resource.meta?.metricsTag && ['relay', 'direct'].includes(resource.meta.kind));
+  if (!live || serviceHealth(engine === 'sing-box' ? 'nexusgate-sing-box' : 'nexusgate-xray').status !== 'ready') return;
+  const report = queryUsage();
+  if (report.engineErrors.includes(engine)) throw new Error(`${engine} 重载前无法读取入口计数；请先运行 ng-agent doctor`);
+  // Await the controller's durable write before a restart destroys the
+  // in-memory counters. The periodic loop can report concurrently; the
+  // controller ignores repeated and out-of-order samples for one process.
+  await request('/api/agent/usage', { method:'POST', body:JSON.stringify(report) });
+}
+
+async function flushAllUsageBeforeRestart() {
+  for (const engine of ['xray', 'sing-box']) await flushUsageBeforeChange(engine);
+}
+
+async function applyResource(payload) {
   if (!payload || !payload.resource || !payload.resource.id) throw new Error('Missing resource payload');
   const artifacts = {};
   const resource = materialize(payload.resource, artifacts);
@@ -230,6 +258,8 @@ function applyResource(payload) {
   const backup = fs.existsSync(target) ? fs.readFileSync(target) : null;
   const oldEngine = backup ? JSON.parse(backup).engine || 'xray' : null;
   const newEngine = resource.engine || 'xray';
+  await flushUsageBeforeChange(newEngine);
+  if (oldEngine && oldEngine !== newEngine) await flushUsageBeforeChange(oldEngine);
   fs.writeFileSync(target, `${JSON.stringify(resource, null, 2)}\n`, { mode: 0o600 });
   try {
     activateResourceEngine(newEngine);
@@ -247,11 +277,12 @@ function applyResource(payload) {
   return { artifacts };
 }
 
-function deleteResource(payload) {
+async function deleteResource(payload) {
   const target = safeResourcePath(payload.resourceId);
   if (!fs.existsSync(target)) return { alreadyAbsent: true };
   const backup = fs.readFileSync(target);
-  const engine = JSON.parse(backup).engine;
+  const engine = JSON.parse(backup).engine || 'xray';
+  await flushUsageBeforeChange(engine);
   fs.rmSync(target);
   try { activateResourceEngine(engine); }
   catch (error) { fs.writeFileSync(target, backup, { mode: 0o600 }); throw error; }
@@ -262,8 +293,8 @@ async function execute(job) {
   log('Executing', job.id, job.action);
   try {
     let result;
-    if (job.action === 'apply_resource') result = applyResource(job.payload);
-    else if (job.action === 'delete_resource') result = deleteResource(job.payload);
+    if (job.action === 'apply_resource') result = await applyResource(job.payload);
+    else if (job.action === 'delete_resource') result = await deleteResource(job.payload);
     else throw new Error(`Unsupported job action: ${job.action}`);
     await request(`/api/agent/jobs/${encodeURIComponent(job.id)}/complete`, { method: 'POST', body: JSON.stringify({ success: true, result }) });
     log('Completed', job.id);
@@ -284,10 +315,12 @@ function systemInfo() {
 }
 
 function engineHealth() {
-  const xray = serviceHealth('nexusgate-xray');
+  const resources = readResources();
+  const xray = resources.some((item) => item.engine !== 'sing-box') ? serviceHealth('nexusgate-xray')
+    : { status:'ready', detail:'无 Xray 资源，已停止空闲进程' };
   xray.singBoxInstalled = fs.existsSync(SINGBOX_BIN) && fs.existsSync(SINGBOX_STATS_BIN);
   xray.certificates = installedCertificates();
-  if (readResources().some((item) => item.engine === 'sing-box')) {
+  if (resources.some((item) => item.engine === 'sing-box')) {
     const singbox = serviceHealth('nexusgate-sing-box');
     xray.singBoxStatus = singbox.status;
     if (singbox.status !== 'ready') return { ...xray, status: 'error', detail: `sing-box: ${singbox.detail}` };
@@ -389,7 +422,7 @@ function queryUsage() {
   // Count client ingress once; counting the exit as well doubles forwarded traffic.
   const resources = readResources().filter((resource) => resource.meta && resource.meta.metricsTag &&
     ['relay', 'direct'].includes(resource.meta.kind));
-  const samples = [], errors = [];
+  const samples = [], errors = [], engineErrors = [];
   for (const engine of ['xray', 'sing-box']) {
     const selected = resources.filter((item) => (item.engine || 'xray') === engine);
     if (!selected.length) continue;
@@ -402,15 +435,15 @@ function queryUsage() {
     const result = spawnSync(binary, args,
       { encoding: 'utf8', timeout: 15000 });
     const after = serviceEpoch(service);
-    if (before && after && before !== after) { errors.push(`${engine} restarted during statistics query`); continue; }
-    if (result.status !== 0) { errors.push(`${engine} statsquery failed: ${safeError(result.stderr || result.error?.message || result.stdout).slice(0, 160)}`); continue; }
+    if (before && after && before !== after) { errors.push(`${engine} restarted during statistics query`); engineErrors.push(engine); continue; }
+    if (result.status !== 0) { errors.push(`${engine} statsquery failed: ${safeError(result.stderr || result.error?.message || result.stdout).slice(0, 160)}`); engineErrors.push(engine); continue; }
     try {
       const parsed = parseUsageStats(result.stdout, selected);
       samples.push(...parsed.map((item) => ({ ...item, epoch: `${engine}:${before || after || 'unknown'}` })));
       if (!parsed.length) errors.push(`${engine} 入口尚无统计记录`);
-    } catch (error) { errors.push(safeError(error.message)); }
+    } catch (error) { errors.push(`${engine}: ${safeError(error.message)}`); engineErrors.push(engine); }
   }
-  return { samples, error: errors.join('; ') || null };
+  return { samples, error: errors.join('; ') || null, engineErrors };
 }
 
 function readSingBoxObservations() {
@@ -524,7 +557,10 @@ async function main() {
   await pollLoop();
 }
 
-if (require.main === module) main().catch((error) => { console.error(error); process.exit(1); });
+if (require.main === module) {
+  const action = process.argv[2] === 'flush-usage' ? flushAllUsageBeforeRestart() : main();
+  action.catch((error) => { console.error(safeError(error.message)); process.exitCode = 1; });
+}
 
 module.exports = { parseX25519, activateConfig, activateSingBox, combinedConfig, combinedSingBoxConfig, applyResource,
   readObservations, readSingBoxObservations, parseUsageStats, queryUsage, installedCertificates };

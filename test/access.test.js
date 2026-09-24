@@ -28,4 +28,5 @@ test('subscription identities prefer explicit client headers and count only serv
   pruneAccess(data, now);
   assert.equal(data.subscriptionAccess.length, 4);
   assert.equal(data.subscriptionClients.length, 1);
+  assert.deepEqual(data.observations.map((item) => item.ip), ['192.0.2.1']);
 });

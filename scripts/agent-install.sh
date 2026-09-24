@@ -86,7 +86,7 @@ else
 fi
 
 info "向控制面注册"
-enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.4",system:{platform:process.platform,arch:process.arch}}))')"
+enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.6",system:{platform:process.platform,arch:process.arch}}))')"
 response="$(curl -fsS -H 'content-type: application/json' --data "$enroll_json" "${CONTROLLER%/}/api/agent/enroll")" || die "注册失败，请检查地址和令牌"
 agent_key="$(RESPONSE_VALUE="$response" node -e 'const r=JSON.parse(process.env.RESPONSE_VALUE); if(!r.agentKey) process.exit(1); process.stdout.write(r.agentKey)')" || die "控制面返回无效"
 
@@ -117,6 +117,11 @@ elif command -v rc-service >/dev/null; then
   chmod 0755 /etc/init.d/nexusgate-agent /etc/init.d/nexusgate-xray /etc/init.d/nexusgate-sing-box
   rc-update add nexusgate-xray default >/dev/null
   rc-update add nexusgate-agent default >/dev/null
+  # Alpine runs /etc/periodic/daily/logrotate through BusyBox crond.
+  if [[ -e /etc/init.d/crond ]]; then
+    rc-update add crond default >/dev/null 2>&1 || true
+    rc-service crond start >/dev/null 2>&1 || true
+  fi
   rc-service nexusgate-xray restart
   rm -f -- /etc/nexusgate/last-heartbeat.json
   rc-service nexusgate-agent restart

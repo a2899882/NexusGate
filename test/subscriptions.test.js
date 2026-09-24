@@ -40,3 +40,46 @@ test('TLS WebSocket exports valid Mihomo and sing-box TLS settings', () => {
   assert.equal(outbound.tls.reality, undefined);
   assert.equal(formatSubscription(data, customer, 'surge'), null);
 });
+
+test('adding HY2 to an AnyTLS subscription keeps ALPN on one valid YAML line and route names clean', () => {
+  const data = { chains:[{ id:'any-route', name:'US-rak-CN2' }, { id:'hy-route', name:'hy2 cn2' }], deployments:[
+    { chainId:'any-route', customerId:'55', role:'direct', status:'active',
+      clientUri:'anytls://secret@entry.example.com:48924?sni=entry.example.com#US-rak-CN2%20%C2%B7%20rak%20cn2%3A48924' },
+    { chainId:'hy-route', customerId:'55', role:'direct', status:'active',
+      clientUri:'hysteria2://secret@entry.example.com:40003?sni=entry.example.com&alpn=h3#hy2%20cn2%20%C2%B7%20rak%20cn2%3A40003' }
+  ] };
+  const customer = { id:'55' };
+  const raw = formatSubscription(data, customer, 'raw').body;
+  assert.match(raw, /#US-rak-CN2\n/);
+  assert.match(raw, /#hy2%20cn2\n/);
+  assert.doesNotMatch(raw, /rak%20cn2%3A/);
+  const yaml = formatSubscription(data, customer, 'clash').body;
+  assert.match(yaml, /^    alpn: \["h3"\]$/m);
+  assert.match(yaml, /^proxy-groups:$/m);
+  assert.doesNotMatch(yaml, /^"h3"$/m);
+  assert.match(yaml, /^  - name: "US-rak-CN2"$/m);
+  assert.match(yaml, /^  - name: "hy2 cn2"$/m);
+});
+
+test('legacy VMess subscriptions also use the route name instead of a base64 label', () => {
+  const payload = { v:'2', ps:'old · entry:20000', add:'entry.example.com', port:'20000', id:'uuid', path:'/ws' };
+  const data = { chains:[{ id:'vmess-route', name:'VMess US' }], deployments:[{
+    chainId:'vmess-route', customerId:'vmess-customer', role:'direct', status:'active',
+    clientUri:`vmess://${Buffer.from(JSON.stringify(payload)).toString('base64')}`
+  }] };
+  const exported = entries(data, 'vmess-customer');
+  assert.equal(clashProxy(exported[0]).name, 'VMess US');
+  assert.match(formatSubscription(data, { id:'vmess-customer' }, 'clash').body, /^  - name: "VMess US"$/m);
+});
+
+test('Clash aliases only route names that collide with built-in groups or policies', () => {
+  const data = { chains:[{ id:'route-a', name:'节点选择' }, { id:'route-b', name:'DIRECT' }], deployments:[
+    { chainId:'route-a', customerId:'one', role:'direct', status:'active', clientUri:'anytls://password@entry.example.com:443?sni=entry.example.com#old' },
+    { chainId:'route-b', customerId:'one', role:'direct', status:'active', clientUri:'hysteria2://password@entry.example.com:444?sni=entry.example.com#old' }
+  ] };
+  const yaml = formatSubscription(data, { id:'one' }, 'clash-smart').body;
+  assert.match(yaml, /^  - name: "节点选择 \(节点\)"$/m);
+  assert.match(yaml, /^  - name: "DIRECT \(节点\)"$/m);
+  assert.match(yaml, /^      - "节点选择 \(节点\)"$/m);
+  assert.match(formatSubscription(data, { id:'one' }, 'raw').body, /#%E8%8A%82%E7%82%B9%E9%80%89%E6%8B%A9/);
+});

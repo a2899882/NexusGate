@@ -10,6 +10,11 @@ printf '已验证节点证书：'
 node -e 'const domains=require("/opt/nexusgate-agent/agent.js").installedCertificates();console.log(domains.length?domains.join(", "):"暂无；运行 ng-agent cert")' 2>&1 || true
 printf 'Agent 版本：'
 node -p "require('fs').readFileSync('/opt/nexusgate-agent/agent.js','utf8').match(/const VERSION = '([^']+)'/)[1]" 2>/dev/null || printf '无法读取\n'
+has_xray_resources=1
+if ! node -e 'const fs=require("fs");const dir="/etc/nexusgate/xray/resources";process.exit(fs.readdirSync(dir).some(name=>name.endsWith(".json")&&JSON.parse(fs.readFileSync(`${dir}/${name}`)).engine!=="sing-box")?0:1)' 2>/dev/null; then
+  has_xray_resources=0
+  printf '这台机器没有 Xray 资源，Xray 空闲服务停止属于正常（AnyTLS 由 sing-box 运行）。\n'
+fi
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   for name in nexusgate-agent nexusgate-xray nexusgate-sing-box; do
     printf '%s：' "$name"
@@ -45,18 +50,22 @@ else
   printf '配置文件不存在\n'
 fi
 printf '\nXray 入站流量统计（累计，查询不会清零）：\n'
-stats_output="$(/usr/local/bin/xray api statsquery --server="127.0.0.1:${NG_XRAY_API_PORT:-10085}" -pattern 'inbound>>>' 2>&1)"
-if [[ $? -ne 0 ]]; then
-  printf '查询失败：%.250s\n' "$stats_output"
+if [[ "$has_xray_resources" == 0 ]]; then
+  printf '无 Xray 入口，跳过统计查询。\n'
 else
-  STATS_OUTPUT="$stats_output" node -e '
+  stats_output="$(/usr/local/bin/xray api statsquery --server="127.0.0.1:${NG_XRAY_API_PORT:-10085}" -pattern 'inbound>>>' 2>&1)"
+  if [[ $? -ne 0 ]]; then
+    printf '查询失败：%.250s\n' "$stats_output"
+  else
+    STATS_OUTPUT="$stats_output" node -e '
     try {
       const stats = JSON.parse(process.env.STATS_OUTPUT).stat || [];
       const entries = stats.filter(item => /^inbound>>>ng-.*>>>traffic>>>(uplink|downlink)$/.test(item.name));
       if (!entries.length) console.log("尚无入口流量计数；请确认客户端确实连接本机节点后再测试");
       else for (const item of entries.slice(0, 24)) console.log(`${item.name}: ${item.value === undefined ? 0 : item.value} B`);
     } catch { console.log("统计返回格式无效，请升级 Xray 和 Agent"); }
-  '
+    '
+  fi
 fi
 printf '\n最近 Agent 与 Xray 日志：\n'
 if command -v journalctl >/dev/null && [[ -d /run/systemd/system ]]; then

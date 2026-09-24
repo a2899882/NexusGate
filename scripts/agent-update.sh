@@ -63,6 +63,10 @@ elif command -v rc-service >/dev/null; then
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/openrc/nexusgate-xray" -o /etc/init.d/nexusgate-xray
   curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/openrc/nexusgate-sing-box" -o /etc/init.d/nexusgate-sing-box
   chmod 0755 /etc/init.d/nexusgate-agent /etc/init.d/nexusgate-xray /etc/init.d/nexusgate-sing-box
+  if [[ -e /etc/init.d/crond ]]; then
+    rc-update add crond default >/dev/null 2>&1 || true
+    rc-service crond start >/dev/null 2>&1 || true
+  fi
   rm -f -- /etc/nexusgate/last-heartbeat.json
   rc-service nexusgate-agent restart
   rc-service nexusgate-agent status >/dev/null || die "Agent 重启失败"

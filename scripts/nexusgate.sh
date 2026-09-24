@@ -49,7 +49,8 @@ restore() {
 
 update_panel() {
   need_root
-  local stage current_backup
+  local stage current_backup old_backup
+  local -a old_backups=()
   current_backup="/root/nexusgate-before-update-$(date +%Y%m%d-%H%M%S).tar.gz"
   backup "$current_backup"
   stage="$(mktemp -d /tmp/nexusgate-update.XXXXXX)"
@@ -79,6 +80,10 @@ update_panel() {
     info '检测到本机同时承载节点，更新本机 Agent'
     bash "$stage/source/scripts/agent-update.sh" || info 'Agent 更新失败；控制面仍可运行，请执行 ng-agent doctor 查看原因'
   fi
+  # Only automatic pre-update snapshots are pruned; manual and pre-restore
+  # backups remain untouched. Keep five successful rollback points on disk.
+  mapfile -t old_backups < <(find /root -maxdepth 1 -type f -name 'nexusgate-before-update-*.tar.gz' -printf '%T@ %p\n' | sort -nr | sed -n '6,$p' | cut -d' ' -f2-)
+  for old_backup in "${old_backups[@]}"; do rm -f -- "$old_backup"; done
   info "更新完成；更新前备份：$current_backup"
 }
 

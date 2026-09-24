@@ -44,16 +44,25 @@ validate() {
 }
 
 activate() {
+  flush_usage
   if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
     systemctl try-restart nexusgate-xray.service || printf 'Xray 重启失败，请运行 ng-agent doctor\n' >&2
     systemctl try-restart nexusgate-sing-box.service || printf 'sing-box 重启失败，请运行 ng-agent doctor\n' >&2
   elif command -v rc-service >/dev/null; then
-    rc-service nexusgate-xray restart || printf 'Xray 重启失败，请运行 ng-agent doctor\n' >&2
+    rc-service nexusgate-xray status >/dev/null 2>&1 && rc-service nexusgate-xray restart || true
     rc-service nexusgate-sing-box status >/dev/null 2>&1 && rc-service nexusgate-sing-box restart || true
   fi
   printf '证书已安装：%s；有效期：' "$target"
   openssl x509 -in "$target/fullchain.pem" -enddate -noout
   sync_panel
+}
+
+flush_usage() {
+  [[ -r /etc/nexusgate/agent.env && -f /opt/nexusgate-agent/agent.js ]] || return 0
+  if ! ( set -a; source /etc/nexusgate/agent.env; set +a
+    node /opt/nexusgate-agent/agent.js flush-usage ); then
+    printf '重启前未能上报入口计数，本次尚未上报的流量可能漏计；请检查 ng-agent doctor。\n' >&2
+  fi
 }
 
 install_certbot() {
@@ -88,11 +97,17 @@ activate_renewal() {
   install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy || return 1
   cat > /etc/letsencrypt/renewal-hooks/deploy/nexusgate-reload.sh <<'EOF'
 #!/usr/bin/env bash
+if [[ -r /etc/nexusgate/agent.env && -f /opt/nexusgate-agent/agent.js ]]; then
+  if ! ( set -a; source /etc/nexusgate/agent.env; set +a
+    node /opt/nexusgate-agent/agent.js flush-usage ); then
+    printf '证书续签后核心重启前计数上报失败，可能漏计流量；请检查 ng-agent doctor。\n' >&2
+  fi
+fi
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
   systemctl try-restart nexusgate-xray.service
   systemctl try-restart nexusgate-sing-box.service
 elif command -v rc-service >/dev/null; then
-  rc-service nexusgate-xray restart
+  rc-service nexusgate-xray status >/dev/null 2>&1 && rc-service nexusgate-xray restart || true
   rc-service nexusgate-sing-box status >/dev/null 2>&1 && rc-service nexusgate-sing-box restart || true
 fi
 EOF

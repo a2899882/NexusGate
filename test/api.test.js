@@ -122,11 +122,15 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   await usageReport(150, 350);
   await usageReport(150, 350); // Retry after a lost HTTP response must not double count.
   await usageReport(250, 900);
+  await usageReport(150, 350); // A late report from the same process must not count a false reset.
   await usageReport(10, 20, 'xray-start-2'); // Xray restarted, and its counters began from zero.
+  await usageReport(250, 900, 'xray-start-1'); // The old request can arrive after the new process reported.
   const metered = (await request('/api/customers')).customers.find((item) => item.id === customerB.id);
   assert.equal(metered.usedBytes, 1180);
   assert.equal(metered.usedUplinkBytes, 260);
   assert.equal(metered.usedDownlinkBytes, 920);
+  const meteredDeployment = (await request('/api/chains')).deployments.find((item) => item.id === directDeploy.deployments[0].id);
+  assert.deepEqual(meteredDeployment.meteredTraffic, { uplink:260, downlink:920 });
   const raw = await fetch(`${base}/s/${customerB.subscriptionToken}/raw`);
   assert.equal(raw.status, 200);
   assert.match(raw.headers.get('subscription-userinfo'), /upload=260; download=920;/);
@@ -262,13 +266,13 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   assert.equal(oldAgent.status, 409);
   assert.match((await oldAgent.json()).message, /入口证书未由 Agent 确认/);
   await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
-    body:JSON.stringify({ version:'0.6.4', engine:{ status:'ready', singBoxInstalled:false, certificates:['entry.example.com'] } }) });
+    body:JSON.stringify({ version:'0.6.5', engine:{ status:'ready', singBoxInstalled:false, certificates:['entry.example.com'] } }) });
   const missingEngine = await fetch(`${base}/api/chains/${anyChain.id}/deploy`, { method:'POST',
     headers:{ cookie, 'x-csrf-token':session.csrf, 'content-type':'application/json' }, body:'{}' });
   assert.equal(missingEngine.status, 409);
   assert.match((await missingEngine.json()).message, /ng-agent engine install/);
   await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
-    body:JSON.stringify({ version:'0.6.4', engine:{ status:'ready', singBoxInstalled:true, certificates:['entry.example.com'] } }) });
+    body:JSON.stringify({ version:'0.6.5', engine:{ status:'ready', singBoxInstalled:true, certificates:['entry.example.com'] } }) });
   const anyDeploy = (await request(`/api/chains/${anyChain.id}/deploy`, 'POST', {})).deployments;
   const anyExitJob = await completeNext(agentKeys[exit.id]);
   assert.equal(anyExitJob.payload.resource.inbounds[0].protocol, 'vless');
@@ -278,11 +282,14 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
   const anyEntry = anyDeploy.find((item) => item.role === 'relay');
   const anyUri = (await request('/api/chains')).deployments.find((item) => item.id === anyEntry.id).clientUri;
   assert.match(anyUri, /^anytls:\/\//);
+  assert.equal(decodeURIComponent(anyUri.split('#')[1]), 'AnyTLS → VLESS');
   assert.match(await (await fetch(`${base}/s/${anyCustomer.subscriptionToken}/clash`)).text(), /type: "anytls"/);
   const anyUsage = await fetch(`${base}/api/agent/usage`, { method:'POST',
     headers:{ authorization:`Bearer ${agentKey}`, 'content-type':'application/json' },
     body:JSON.stringify({ samples:[{ resourceId:anyEntry.resourceId, uplink:120, downlink:400, epoch:'sing-box:123:456' }] }) });
   assert.equal(anyUsage.status, 200);
+  assert.deepEqual((await request('/api/chains')).deployments.find((item) => item.id === anyEntry.id).meteredTraffic,
+    { uplink:120, downlink:400 });
   await request(`/api/customers/${anyCustomer.id}`, 'PATCH', { trafficLimitBytes:500 });
   assert.equal((await completeNext(agentKeys[exit.id])).action, 'delete_resource');
   assert.equal((await completeNext(agentKey)).action, 'delete_resource');
