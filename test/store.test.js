@@ -43,3 +43,35 @@ test('older backups without subscription logs remain restorable', async (t) => {
   assert.deepEqual(loaded.data.subscriptionAccess, []);
   assert.deepEqual(loaded.data.subscriptionClients, []);
 });
+
+test('idle status updates and skipped transactions do not rewrite the database', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'nexusgate-store-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'data.json');
+  const store = await new Store(file).init();
+  const initial = await fs.promises.readFile(file, 'utf8');
+  await store.transient((data) => { data.settings.lastHeartbeat = 'seen'; });
+  assert.equal(store.data.settings.lastHeartbeat, 'seen');
+  assert.equal(await store.transaction(() => Store.SKIP), null);
+  assert.equal(await fs.promises.readFile(file, 'utf8'), initial);
+  await store.transaction((data) => { data.customers.push({ id: 'cus_1' }); });
+  assert.equal((await new Store(file).init()).data.settings.lastHeartbeat, 'seen');
+});
+
+test('transient updates serialize with concurrent durable transactions', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'nexusgate-store-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'data.json');
+  const store = await new Store(file).init();
+  const durable = store.transaction(async (data) => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    data.settings.completedJobRetentionDays = 3;
+  });
+  const transient = store.transient((data) => { data.settings.lastHeartbeat = 'new'; });
+  await Promise.all([durable, transient]);
+  assert.equal(store.data.settings.lastHeartbeat, 'new');
+  await store.transaction((data) => { data.settings.activityRetentionDays = 14; });
+  const loaded = await new Store(file).init();
+  assert.equal(loaded.data.settings.lastHeartbeat, 'new');
+  assert.equal(loaded.data.settings.completedJobRetentionDays, 3);
+});

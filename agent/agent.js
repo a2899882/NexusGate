@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const VERSION = '0.6.7';
+const VERSION = '0.6.8';
 const CONTROLLER = String(process.env.NG_CONTROLLER || '').replace(/\/+$/, '');
 const AGENT_KEY = process.env.NG_AGENT_KEY || '';
 const XRAY_BIN = process.env.NG_XRAY_BIN || '/usr/local/bin/xray';
@@ -322,10 +322,22 @@ async function execute(job) {
 
 function systemInfo() {
   const cpus = os.cpus();
+  let memoryAvailable = os.freemem();
+  try {
+    const match = fs.readFileSync('/proc/meminfo', 'utf8').match(/^MemAvailable:\s+(\d+) kB/m);
+    if (match) memoryAvailable = Number(match[1]) * 1024;
+  } catch { /* Other supported systems still report free memory. */ }
+  let diskTotal = null, diskAvailable = null;
+  try {
+    const disk = fs.statfsSync('/');
+    diskTotal = disk.blocks * disk.bsize;
+    diskAvailable = disk.bavail * disk.bsize;
+  } catch { /* Older Node builds cannot report filesystem capacity. */ }
   return {
     hostname: os.hostname(), platform: os.platform(), release: os.release(), arch: os.arch(),
     uptimeSeconds: Math.round(os.uptime()), load1: Number(os.loadavg()[0].toFixed(2)),
-    cpuCount: cpus.length, memoryTotal: os.totalmem(), memoryFree: os.freemem()
+    cpuCount: cpus.length, memoryTotal: os.totalmem(), memoryFree: os.freemem(),
+    memoryAvailable, diskTotal, diskAvailable
   };
 }
 
@@ -643,4 +655,4 @@ if (require.main === module) {
 
 module.exports = { parseX25519, activateConfig, activateSingBox, combinedConfig, combinedSingBoxConfig, applyResource,
   readObservations, readSingBoxObservations, parseUsageStats, queryUsage, installedCertificates,
-  udpPortsForPid, missingHysteriaListeners };
+  udpPortsForPid, missingHysteriaListeners, systemInfo };

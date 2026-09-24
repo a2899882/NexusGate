@@ -70,6 +70,18 @@ test('admin can create resources and queue a mixed-protocol chain', async (t) =>
     body:JSON.stringify({ domain:'entry.example.com' }) });
   assert.equal(certSync.status, 200);
   assert.equal((await request('/api/servers')).servers.find((item) => item.id === relay.id).tlsDomain, 'entry.example.com');
+  const idleDatabase = await fs.promises.readFile(path.join(dir, 'data.json'), 'utf8');
+  for (let count = 0; count < 10; count += 1) {
+    for (const server of [relay, exit]) {
+      const headers = { authorization:`Bearer ${agentKeys[server.id]}`, 'content-type':'application/json' };
+      const poll = await fetch(`${base}/api/agent/poll`, { method:'POST', headers, body:'{}' });
+      assert.deepEqual(await poll.json(), { job:null });
+      const heartbeat = await fetch(`${base}/api/agent/heartbeat`, { method:'POST', headers,
+        body:JSON.stringify({ version:'0.6.8', system:{ memoryAvailable:512 * 1024 * 1024 } }) });
+      assert.equal(heartbeat.status, 200);
+    }
+  }
+  assert.equal(await fs.promises.readFile(path.join(dir, 'data.json'), 'utf8'), idleDatabase);
   const badCertSync = await fetch(`${base}/api/agent/tls-domain`, { method:'POST', headers:{ authorization:`Bearer ${agentKeys[relay.id]}`, 'content-type':'application/json' },
     body:JSON.stringify({ domain:'invalid/domain' }) });
   assert.equal(badCertSync.status, 400);

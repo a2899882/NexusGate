@@ -2,7 +2,7 @@
 
 const state = {
   session: null, page: 'overview', overview: null, servers: [], customers: [],
-  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.7'
+  chains: [], deployments: [], jobs: [], protocols: [], realityPresets: [], search: '', version: '0.6.8'
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -127,9 +127,18 @@ function renderOverview() {
 
 function renderServers() {
   const q = state.search.toLowerCase();
+  const resources = (system) => {
+    if (!system || !Number.isFinite(system.memoryTotal)) return '';
+    const memory = Number(system.memoryAvailable ?? system.memoryFree);
+    const disk = Number(system.diskAvailable);
+    const warning = memory < 200 * 1024 * 1024 || (Number.isFinite(disk) && disk < 1024 ** 3);
+    const text = `内存可用 ${fmtBytes(memory)} / ${fmtBytes(system.memoryTotal)} · 负载 ${esc(system.load1 ?? '—')} / ${esc(system.cpuCount ?? '—')} 核`
+      + (Number.isFinite(disk) ? ` · 系统盘可用 ${fmtBytes(disk)} / ${fmtBytes(system.diskTotal)}` : '');
+    return `<small${warning ? ' class="error-detail"' : ''}>${text}${warning ? ' · 资源余量偏低' : ''}</small>`;
+  };
   const rows = state.servers.filter((item) => [item.name,item.region,item.publicAddress,item.publicAddressV6,...(item.labels || [])].join(' ').toLowerCase().includes(q)).map((server) => `<tr>
     <td><strong>${esc(server.name)}</strong><small>${esc(server.publicAddress)}${server.publicAddressV6 ? ` · ${esc(server.publicAddressV6)}` : ''}</small></td><td>${esc(roleText[server.role] || server.role)}</td><td>${esc(server.region || '未分组')}</td>
-    <td>${tags(server.labels)}</td><td>${status(server.status)}<small>${server.lastSeenAt ? `最后上报 ${fmtDate(server.lastSeenAt)}` : '等待 Agent 注册'} · Agent ${esc(server.agentVersion || '未上报版本')}</small>${server.tlsDomain ? `<small>节点证书 ${esc(server.tlsDomain)} · ${server.engine?.certificates?.includes(server.tlsDomain) ? '已确认' : '待确认'}</small>` : ''}${server.role !== 'exit' && server.engine ? `<small>AnyTLS 引擎 · ${server.engine.singBoxInstalled ? '已安装' : '按需安装（ng-agent engine install）'}</small>` : ''}${oldUsageAgent(server.agentVersion) ? '<small class="error-detail">旧版流量采集有问题，请在该机运行 ng-agent-update</small>' : ''}${server.usage ? `<small>流量统计 ${fmtDate(server.usage.lastReportAt)} · ${server.usage.sampleCount} 项</small>` : '<small>尚无流量统计上报</small>'}${server.usage?.error ? `<small class="error-detail" title="${esc(server.usage.error)}">统计异常：${esc(server.usage.error)}</small>` : ''}${server.engine && server.engine.status === 'error' ? `<small class="error-detail" title="${esc(server.engine.detail)}">引擎故障：${esc(server.engine.detail)}</small>` : ''}${server.pendingCleanup ? `<small>待清理 ${server.pendingCleanup} 项</small>` : ''}</td>
+    <td>${tags(server.labels)}</td><td>${status(server.status)}<small>${server.lastSeenAt ? `最后上报 ${fmtDate(server.lastSeenAt)}` : '等待 Agent 注册'} · Agent ${esc(server.agentVersion || '未上报版本')}</small>${resources(server.system)}${server.tlsDomain ? `<small>节点证书 ${esc(server.tlsDomain)} · ${server.engine?.certificates?.includes(server.tlsDomain) ? '已确认' : '待确认'}</small>` : ''}${server.role !== 'exit' && server.engine ? `<small>AnyTLS 引擎 · ${server.engine.singBoxInstalled ? '已安装' : '按需安装（ng-agent engine install）'}</small>` : ''}${oldUsageAgent(server.agentVersion) ? '<small class="error-detail">旧版流量采集有问题，请在该机运行 ng-agent-update</small>' : ''}${server.usage ? `<small>流量统计 ${fmtDate(server.usage.lastReportAt)} · ${server.usage.sampleCount} 项</small>` : '<small>尚无流量统计上报</small>'}${server.usage?.error ? `<small class="error-detail" title="${esc(server.usage.error)}">统计异常：${esc(server.usage.error)}</small>` : ''}${server.engine && server.engine.status === 'error' ? `<small class="error-detail" title="${esc(server.engine.detail)}">引擎故障：${esc(server.engine.detail)}</small>` : ''}${server.pendingCleanup ? `<small>待清理 ${server.pendingCleanup} 项</small>` : ''}</td>
     <td>${rowActions(server.id, `<button data-action="edit-server" data-id="${esc(server.id)}">编辑</button><button data-action="enroll-server" data-id="${esc(server.id)}">注册</button>`, [
       ['agent-uninstall','SSH 卸载'], ...(server.pendingCleanup ? [['retry-cleanup','重试清理']] : []),
       server.pendingCleanup && server.status !== 'online' ? ['forget-server','遗忘离线设备'] : ['delete-server','删除设备']
