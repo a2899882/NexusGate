@@ -7,8 +7,15 @@ const os = require('node:os');
 const path = require('node:path');
 const dgram = require('node:dgram');
 const { spawn } = require('node:child_process');
-const { parseX25519, parseUsageStats, combinedConfig, udpPortsForPid } = require('../agent/agent');
+const { parseX25519, parseUsageStats, combinedConfig, udpPortsForPid, systemInfo } = require('../agent/agent');
 const { redactSecrets } = require('../lib/redact');
+
+test('Agent reports usable memory and system disk without reading per-connection state', () => {
+  const info = systemInfo();
+  assert.ok(info.memoryTotal >= info.memoryAvailable && info.memoryAvailable >= 0);
+  assert.ok(info.cpuCount >= 1);
+  if (info.diskTotal !== null) assert.ok(info.diskTotal >= info.diskAvailable && info.diskAvailable >= 0);
+});
 
 test('parses both current and older Xray x25519 output without including private keys in errors', () => {
   const current = parseX25519('PrivateKey: current_private\nPassword (PublicKey): current_public\nHash32: ignored');

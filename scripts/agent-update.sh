@@ -18,6 +18,7 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-update.sh" -o "$tmp_dir/update.sh"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-singbox.sh" -o "$tmp_dir/singbox.sh"
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-logrotate.conf" -o "$tmp_dir/logrotate.conf"
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-logrotate-setup.sh" -o "$tmp_dir/logrotate-setup.sh"
 [[ -s "$tmp_dir/update.sh" ]] || die 'Agent 升级脚本下载不完整'
 node --check "$tmp_dir/agent.js"
 # Updating can rewrite an older HY2 configuration and restart Xray. Persist
@@ -32,8 +33,8 @@ install -m 0755 "$tmp_dir/uninstall.sh" /usr/local/sbin/ng-agent-uninstall
 install -m 0755 "$tmp_dir/doctor.sh" /usr/local/sbin/ng-agent-doctor
 install -m 0755 "$tmp_dir/cert.sh" /usr/local/sbin/ng-agent-cert
 install -m 0755 "$tmp_dir/singbox.sh" /usr/local/sbin/ng-agent-singbox
-install -d -m 0755 /etc/logrotate.d
-install -m 0644 "$tmp_dir/logrotate.conf" /etc/logrotate.d/nexusgate-agent
+install -m 0644 "$tmp_dir/logrotate.conf" /etc/nexusgate/agent-logrotate.conf
+install -m 0755 "$tmp_dir/logrotate-setup.sh" /usr/local/sbin/ng-agent-logrotate-setup
 install -m 0755 "$tmp_dir/update.sh" /usr/local/sbin/ng-agent-update.next
 mv -f -- /usr/local/sbin/ng-agent-update.next /usr/local/sbin/ng-agent-update
 cat > /usr/local/sbin/ng-agent <<'EOF'
@@ -79,6 +80,7 @@ elif command -v rc-service >/dev/null; then
 else
   die "未检测到 systemd 或 OpenRC"
 fi
+ng-agent-logrotate-setup
 for _ in {1..35}; do
   [[ -s /etc/nexusgate/last-heartbeat.json ]] && break
   sleep 1

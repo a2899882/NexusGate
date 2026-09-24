@@ -58,7 +58,8 @@ curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-doctor.sh" -o /usr/local/sbin/ng-agent-doctor
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-cert.sh" -o /usr/local/sbin/ng-agent-cert
 curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-singbox.sh" -o /usr/local/sbin/ng-agent-singbox
-curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-logrotate.conf" -o /etc/logrotate.d/nexusgate-agent
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-logrotate.conf" -o "$tmp_dir/logrotate.conf"
+curl -fL --retry 3 "https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/agent-logrotate-setup.sh" -o "$tmp_dir/logrotate-setup.sh"
 cat > /usr/local/sbin/ng-agent <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -75,6 +76,8 @@ chmod 0644 /opt/nexusgate-agent/agent.js
 chmod 0755 /opt/nexusgate-agent/run.sh /usr/local/sbin/ng-agent-update /usr/local/sbin/ng-agent-uninstall /usr/local/sbin/ng-agent-doctor /usr/local/sbin/ng-agent-cert /usr/local/sbin/ng-agent-singbox /usr/local/sbin/ng-agent
 install -d -m 0700 /etc/nexusgate /etc/nexusgate/xray /etc/nexusgate/xray/resources /etc/nexusgate/sing-box
 install -d -m 0750 /var/log/nexusgate
+install -m 0644 "$tmp_dir/logrotate.conf" /etc/nexusgate/agent-logrotate.conf
+install -m 0755 "$tmp_dir/logrotate-setup.sh" /usr/local/sbin/ng-agent-logrotate-setup
 if [[ ! -f /etc/nexusgate/xray/config.json ]]; then
   printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[]}\n' > /etc/nexusgate/xray/config.json
 fi
@@ -86,7 +89,7 @@ else
 fi
 
 info "向控制面注册"
-enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.7",system:{platform:process.platform,arch:process.arch}}))')"
+enroll_json="$(TOKEN_VALUE="$TOKEN" node -e 'process.stdout.write(JSON.stringify({token:process.env.TOKEN_VALUE,hostname:require("node:os").hostname(),version:"0.6.8",system:{platform:process.platform,arch:process.arch}}))')"
 response="$(curl -fsS -H 'content-type: application/json' --data "$enroll_json" "${CONTROLLER%/}/api/agent/enroll")" || die "注册失败，请检查地址和令牌"
 agent_key="$(RESPONSE_VALUE="$response" node -e 'const r=JSON.parse(process.env.RESPONSE_VALUE); if(!r.agentKey) process.exit(1); process.stdout.write(r.agentKey)')" || die "控制面返回无效"
 
@@ -117,7 +120,7 @@ elif command -v rc-service >/dev/null; then
   chmod 0755 /etc/init.d/nexusgate-agent /etc/init.d/nexusgate-xray /etc/init.d/nexusgate-sing-box
   rc-update add nexusgate-xray default >/dev/null
   rc-update add nexusgate-agent default >/dev/null
-  # Alpine runs /etc/periodic/daily/logrotate through BusyBox crond.
+  # Alpine runs the dedicated hourly task through BusyBox crond.
   if [[ -e /etc/init.d/crond ]]; then
     rc-update add crond default >/dev/null 2>&1 || true
     rc-service crond start >/dev/null 2>&1 || true
@@ -129,6 +132,7 @@ elif command -v rc-service >/dev/null; then
 else
   die "未检测到 systemd 或 OpenRC"
 fi
+ng-agent-logrotate-setup
 for _ in {1..35}; do
   [[ -s /etc/nexusgate/last-heartbeat.json ]] && break
   sleep 1

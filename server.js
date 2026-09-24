@@ -19,7 +19,7 @@ const DATA_FILE = process.env.NG_DATA_FILE || path.join(APP_ROOT, 'data', 'nexus
 const HOST = process.env.NG_HOST || '127.0.0.1';
 const PORT = Number(process.env.NG_PORT || 8787);
 const COOKIE_SECURE = process.env.NG_COOKIE_SECURE !== 'false';
-const VERSION = '0.6.7';
+const VERSION = '0.6.8';
 
 const store = new Store(DATA_FILE);
 let sessions;
@@ -271,7 +271,7 @@ async function handleAgent(req, res, pathname) {
 
   if (req.method === 'POST' && pathname === '/api/agent/heartbeat') {
     const body = await readJson(req);
-    await store.transaction((data) => {
+    await store.transient((data) => {
       const current = data.agents.find((item) => item.id === agent.id);
       const server = data.servers.find((item) => item.id === agent.serverId);
       if (current) {
@@ -322,10 +322,14 @@ async function handleAgent(req, res, pathname) {
   }
 
   if (req.method === 'POST' && pathname === '/api/agent/poll') {
+    if (!store.data.jobs.some((item) => item.serverId === agent.serverId && item.status === 'queued')) {
+      sendJson(res, 200, { job: null });
+      return true;
+    }
     let picked = null;
     await store.transaction((data) => {
       const job = data.jobs.find((item) => item.serverId === agent.serverId && item.status === 'queued');
-      if (!job) return;
+      if (!job) return Store.SKIP;
       job.status = 'running';
       job.attempts += 1;
       job.startedAt = nowIso();
